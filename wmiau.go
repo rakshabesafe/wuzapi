@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"context"
-	"crypto/tls"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"google.golang.org/protobuf/proto"
 	"github.com/go-resty/resty/v2"
 	"github.com/jmoiron/sqlx"
 	"github.com/mdp/qrterminal/v3"
