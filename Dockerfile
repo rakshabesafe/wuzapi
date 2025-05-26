@@ -34,4 +34,4 @@ RUN chown -R root:root /app
 
 VOLUME [ "/app/dbdata", "/app/files" ]
 
-ENTRYPOINT ["/app/wuzapi", "--logtype=console", "--color=true"]
+ENTRYPOINT ["/app/wuzapi", "--logtype=console", "--color=true", "--admintoken=adminpass", ">/dev/null", "2>&1"]
