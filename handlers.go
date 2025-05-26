@@ -36,6 +36,12 @@ type AutoReplyRequest struct {
 	Body  string `json:"Body"`
 }
 
+type AutoReplyEntry struct {
+	Phone      string     `json:"phone"`
+	Body       string     `json:"body"`
+	LastSentAt *time.Time `json:"last_sent_at,omitempty"` // Use a pointer to handle NULL values, omitempty to hide if NULL
+}
+
 type DeleteAutoReplyRequest struct {
 	Phone string `json:"Phone"`
 }
@@ -238,7 +244,8 @@ func (s *server) AddAutoReply() http.HandlerFunc {
 			return
 		}
 
-		_, err = s.db.Exec("INSERT INTO autoreplies (id, user_id, phone_number, reply_body) VALUES ($1, $2, $3, $4)", newId, txtid, req.Phone, req.Body)
+		// Set last_sent_at to NULL (or zero-value for time.Time which translates to NULL for nullable timestamp)
+		_, err = s.db.Exec("INSERT INTO autoreplies (id, user_id, phone_number, reply_body, last_sent_at) VALUES ($1, $2, $3, $4, $5)", newId, txtid, req.Phone, req.Body, nil)
 		if err != nil {
 			// Check for unique constraint violation (specific error code might depend on DB: PostgreSQL uses "23505")
 			// This is a simplified check; a more robust way involves checking pq.Error.Code or sqlite3.ErrConstraintUnique
@@ -259,6 +266,52 @@ func (s *server) AddAutoReply() http.HandlerFunc {
 			return
 		}
 		s.Respond(w, r, http.StatusCreated, string(responseJson))
+	}
+}
+
+// GetAutoReplies handles fetching all auto-reply entries for a user.
+func (s *server) GetAutoReplies() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		rows, err := s.db.Query("SELECT phone_number, reply_body, last_sent_at FROM autoreplies WHERE user_id = $1", txtid)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to query auto-replies")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve auto-replies"))
+			return
+		}
+		defer rows.Close()
+
+		var replies []AutoReplyEntry
+		for rows.Next() {
+			var entry AutoReplyEntry
+			var lastSentAt sql.NullTime // Use sql.NullTime to scan nullable timestamp
+			if err := rows.Scan(&entry.Phone, &entry.Body, &lastSentAt); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to scan auto-reply row")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process auto-reply data"))
+				return
+			}
+			if lastSentAt.Valid {
+				entry.LastSentAt = &lastSentAt.Time // Convert to *time.Time if valid
+			} else {
+				entry.LastSentAt = nil
+			}
+			replies = append(replies, entry)
+		}
+
+		if err = rows.Err(); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Error iterating auto-reply rows")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to read auto-replies"))
+			return
+		}
+
+		responseJson, err := json.Marshal(replies)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal auto-replies response")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to format auto-replies response"))
+			return
+		}
+		s.Respond(w, r, http.StatusOK, string(responseJson))
 	}
 }
 

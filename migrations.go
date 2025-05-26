@@ -61,6 +61,7 @@ BEGIN
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             phone_number TEXT NOT NULL,
             reply_body TEXT NOT NULL,
+            last_sent_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, phone_number)
         );
@@ -69,11 +70,12 @@ END $$;
 `
 
 const addAutorepliesTableSQLSQLite = `
-CREATE TABLE autoreplies (
+CREATE TABLE IF NOT EXISTS autoreplies (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     phone_number TEXT NOT NULL,
     reply_body TEXT NOT NULL,
+    last_sent_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE(user_id, phone_number)

@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"context"
+	"crypto/tls"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -624,6 +627,55 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				}
 			}
 		}
+
+		// --- BEGIN AUTOREPLY LOGIC ---
+		userID := mycli.userID
+		senderJID := evt.Info.Sender
+		senderPhoneNumber := senderJID.User
+
+		type autoReplyRule struct {
+			ReplyBody  string       `db:"reply_body"`
+			LastSentAt sql.NullTime `db:"last_sent_at"`
+		}
+		var rule autoReplyRule
+
+		err := mycli.db.Get(&rule, "SELECT reply_body, last_sent_at FROM autoreplies WHERE user_id = $1 AND phone_number = $2", userID, senderPhoneNumber)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Info().Str("user_id", userID).Str("sender", senderPhoneNumber).Msg("No autoreply rule found for this sender.")
+				// No rule, proceed to normal webhook handling without autoreply
+			} else {
+				log.Error().Err(err).Str("user_id", userID).Str("sender", senderPhoneNumber).Msg("Failed to query autoreply rule.")
+				// DB error, proceed to normal webhook handling, maybe log an alert
+			}
+		} else {
+			// Rule found, check rate limit
+			currentTime := time.Now()
+			if rule.LastSentAt.Valid && currentTime.Sub(rule.LastSentAt.Time) < 5*time.Minute {
+				log.Info().Str("user_id", userID).Str("sender", senderPhoneNumber).Msg("Autoreply skipped due to 5-minute rate limit.")
+			} else {
+				// Rate limit check passed, send the autoreply
+				msg := &waE2E.Message{
+					ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+						Text: proto.String(rule.ReplyBody),
+					},
+				}
+				msgID := mycli.WAClient.GenerateMessageID()
+				_, sendErr := mycli.WAClient.SendMessage(context.Background(), senderJID, msg, whatsmeow.SendRequestExtra{ID: msgID})
+				if sendErr != nil {
+					log.Error().Err(sendErr).Str("user_id", userID).Str("sender", senderPhoneNumber).Msg("Failed to send autoreply message.")
+				} else {
+					log.Info().Str("user_id", userID).Str("sender", senderPhoneNumber).Str("reply_body", rule.ReplyBody).Msg("Autoreply message sent successfully.")
+					// Update last_sent_at in the database
+					updateSQL := "UPDATE autoreplies SET last_sent_at = $1 WHERE user_id = $2 AND phone_number = $3"
+					_, updateErr := mycli.db.Exec(updateSQL, currentTime, userID, senderPhoneNumber)
+					if updateErr != nil {
+						log.Error().Err(updateErr).Str("user_id", userID).Str("sender", senderPhoneNumber).Msg("Failed to update last_sent_at for autoreply.")
+					}
+				}
+			}
+		}
+		// --- END AUTOREPLY LOGIC ---
 
 	case *events.Receipt:
 		postmap["type"] = "ReadReceipt"
