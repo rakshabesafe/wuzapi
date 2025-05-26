@@ -21,7 +21,7 @@ RUN apk update && apk add --no-cache \
     ffmpeg \
     tzdata
 
-ENV TZ="America/Sao_Paulo"
+ENV TZ="Asia/Kolkata"
 WORKDIR /app
 
 COPY --from=builder /app/wuzapi         /app/
