@@ -14,11 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"database/sql" // Added for sql.ErrNoRows
-	"go.mau.fi/whatsmeow" // Added for whatsmeow.SendRequestExtra
-	"go.mau.fi/whatsmeow/proto/waE2E" // Added for waE2E.Message
-	"google.golang.org/protobuf/proto" // Added for proto.String
-
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
