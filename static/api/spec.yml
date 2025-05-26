@@ -1258,7 +1258,254 @@ paths:
           description: Unauthorized
         "500":
           description: Internal Server Error
+
+  /mode/autoreply:
+    post:
+      tags:
+        - Mode
+      summary: Add or Update Mode Autoreply
+      description: Adds a new autoreply entry for a specific mode or updates an existing one (based on ModeName and Phone).
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/ModeAutoreplyRequest'
+      responses:
+        "201":
+          description: Mode autoreply added or updated successfully.
+          content:
+            application/json:
+              schema:
+                example: {"code": 201, "data": {"detail": "Mode autoreply added/updated successfully"}, "success": true}
+        "400":
+          description: Bad Request (e.g., invalid ModeName, missing fields).
+          content:
+            application/json:
+              schema:
+                example: {"code": 400, "error": "Invalid ModeName: must be alphanumeric", "success": false}
+        "500":
+          description: Internal Server Error.
+    delete:
+      tags:
+        - Mode
+      summary: Delete Mode Autoreply
+      description: Deletes autoreply entries for a specific mode. If 'Phone' is provided, only that specific entry is deleted. Otherwise, all entries for the mode are deleted.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/ModeAutoreplyDeleteRequest'
+      responses:
+        "200":
+          description: Mode autoreply entries deleted successfully.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "1 autoreply entry(s) deleted for mode 'work'"}, "success": true}
+        "400":
+          description: Bad Request (e.g., invalid ModeName).
+        "500":
+          description: Internal Server Error.
+    get:
+      tags:
+        - Mode
+      summary: Get Mode Autoreplies
+      description: Retrieves autoreply entries. If 'modeName' query parameter is provided, filters by that mode. Otherwise, retrieves all mode autoreplies for the user.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: modeName
+          in: query
+          required: false
+          description: The name of the mode to filter autoreplies by (case-insensitive, alphanumeric).
+          schema:
+            type: string
+            example: "vacation"
+      responses:
+        "200":
+          description: A list of mode autoreply configurations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/definitions/ModeAutoreplyEntry'
+                example: {"code": 200, "data": [{"ModeName": "office", "Phone": "1234567890", "Message": "I am in office."}], "success": true}
+        "400":
+          description: Bad Request (e.g., invalid modeName format).
+        "500":
+          description: Internal Server Error.
+
+  /mode/enablemode:
+    post:
+      tags:
+        - Mode
+      summary: Enable an Autoreply Mode
+      description: Activates a specific autoreply mode. This clears any existing active autoreplies and populates them with entries from the specified mode.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/EnableModeRequest'
+      responses:
+        "200":
+          description: Mode enabled successfully.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "Mode 'vacation' enabled successfully. 5 autoreplies activated."}, "success": true}
+        "400":
+          description: Bad Request (e.g., invalid ModeName).
+        "404":
+          description: Mode not found (no entries in autoreply_modes for the given ModeName). This might be implicitly handled by a 200 OK with "0 autoreplies activated".
+        "500":
+          description: Internal Server Error.
+
+  /mode/disablemode:
+    post:
+      tags:
+        - Mode
+      summary: Disable an Autoreply Mode
+      description: Deactivates the specified autoreply mode if it is currently active. This clears active autoreplies and sets the current mode to none.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/DisableModeRequest'
+      responses:
+        "200":
+          description: Mode disabled successfully or was not active.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "Mode 'vacation' disabled successfully."}, "success": true}
+        "400":
+          description: Bad Request (e.g., invalid ModeName).
+        "500":
+          description: Internal Server Error.
+
+  /mode/currentmode:
+    get:
+      tags:
+        - Mode
+      summary: Get Current Active Autoreply Mode
+      description: Retrieves the name of the currently active autoreply mode for the user.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Successfully retrieved the current mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/definitions/CurrentModeResponse'
+        "500":
+          description: Internal Server Error.
+
+  /mode/clear:
+    post:
+      tags:
+        - Mode
+      summary: Clear All Autoreply Modes
+      description: Deactivates any currently active autoreply mode and clears all entries from the active autoreply list for the user. It does not delete entries from `autoreply_modes`.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: All modes cleared and current mode deactivated successfully.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "All modes cleared and current mode deactivated successfully."}, "success": true}
+        "500":
+          description: Internal Server Error.
+
 definitions:
+  ModeAutoreplyRequest:
+    type: object
+    required:
+      - ModeName
+      - Phone
+      - Message
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode (alphanumeric)."
+        example: "work"
+      Phone:
+        type: string
+        description: "Target phone number for the autoreply."
+        example: "1234567890"
+      Message:
+        type: string
+        description: "Message to be sent as autoreply."
+        example: "I am currently in a meeting."
+  ModeAutoreplyDeleteRequest:
+    type: object
+    required:
+      - ModeName
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode to delete entries from (alphanumeric)."
+        example: "work"
+      Phone:
+        type: string
+        description: "Optional. Target phone number. If provided, only this specific entry for the mode is deleted."
+        example: "1234567890"
+  EnableModeRequest:
+    type: object
+    required:
+      - ModeName
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode to enable (alphanumeric)."
+        example: "vacation"
+  DisableModeRequest:
+    type: object
+    required:
+      - ModeName
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode to disable (alphanumeric)."
+        example: "vacation"
+  ModeAutoreplyEntry:
+    type: object
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode."
+        example: "office"
+      Phone:
+        type: string
+        description: "Target phone number."
+        example: "1234567890"
+      Message:
+        type: string
+        description: "Autoreply message content."
+        example: "Currently at the office."
+  CurrentModeResponse:
+    type: object
+    properties:
+      current_mode_name:
+        type: string
+        nullable: true
+        description: "Name of the currently active mode. Null if no mode is active."
+        example: "vacation"
   AutoReplyEntry:
     type: object
     properties:
