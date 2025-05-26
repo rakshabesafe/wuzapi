@@ -103,6 +103,7 @@ func (s *server) routes() {
 
 	s.router.Handle("/chat/autoreply", c.Then(s.AddAutoReply())).Methods("POST")
 	s.router.Handle("/chat/autoreply", c.Then(s.DeleteAutoReply())).Methods("DELETE")
+	s.router.Handle("/chat/autoreply", c.Then(s.GetAutoReplies())).Methods("GET")
 
 	s.router.Handle("/user/presence", c.Then(s.SendPresence())).Methods("POST")
 	s.router.Handle("/user/info", c.Then(s.GetUser())).Methods("POST")
