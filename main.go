@@ -138,6 +138,7 @@ func init() {
 }
 
 func main() {
+	//zerolog.SetGlobalLevel(zerolog.Disabled)
 	ex, err := os.Executable()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get executable path")
