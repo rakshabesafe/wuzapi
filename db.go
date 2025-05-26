@@ -24,9 +24,58 @@ func InitializeDatabase(exPath string) (*sqlx.DB, error) {
 	config := getDatabaseConfig(exPath)
 
 	if config.Type == "postgres" {
-		return initializePostgres(config)
+		db, err := initializePostgres(config)
+		if err != nil {
+			return nil, err
+		}
+		// Create tables for postgres
+		if err := createTables(db, "postgres"); err != nil {
+			return nil, fmt.Errorf("failed to create tables for postgres: %w", err)
+		}
+		return db, nil
 	}
-	return initializeSQLite(config)
+
+	// Default to SQLite
+	db, err := initializeSQLite(config)
+	if err != nil {
+		return nil, err
+	}
+	// Create tables for sqlite
+	if err := createTables(db, "sqlite"); err != nil {
+		return nil, fmt.Errorf("failed to create tables for sqlite: %w", err)
+	}
+	return db, nil
+}
+
+func createTables(db *sqlx.DB, dbType string) error {
+	// SQL for creating autoreply_modes table
+	autoreplyModesTableSQL := `
+	CREATE TABLE IF NOT EXISTS autoreply_modes (
+		user_id TEXT NOT NULL,
+		mode_name TEXT NOT NULL,
+		phone_number TEXT NOT NULL,
+		message TEXT NOT NULL,
+		UNIQUE (user_id, mode_name, phone_number)
+	);`
+
+	// SQL for creating active_mode table
+	activeModeTableSQL := `
+	CREATE TABLE IF NOT EXISTS active_mode (
+		user_id TEXT PRIMARY KEY NOT NULL,
+		current_mode_name TEXT NULLABLE
+	);`
+
+	// Execute table creation statements
+	if _, err := db.Exec(autoreplyModesTableSQL); err != nil {
+		return fmt.Errorf("failed to create autoreply_modes table: %w", err)
+	}
+	if _, err := db.Exec(activeModeTableSQL); err != nil {
+		return fmt.Errorf("failed to create active_mode table: %w", err)
+	}
+
+	// No initial data for active_mode as it's user-specific and populated on demand.
+
+	return nil
 }
 
 func getDatabaseConfig(exPath string) DatabaseConfig {
@@ -70,7 +119,6 @@ func initializePostgres(config DatabaseConfig) (*sqlx.DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
 	}
-
 	return db, nil
 }
 
@@ -89,6 +137,5 @@ func initializeSQLite(config DatabaseConfig) (*sqlx.DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
-
 	return db, nil
 }

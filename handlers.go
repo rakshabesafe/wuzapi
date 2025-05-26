@@ -46,6 +46,32 @@ type DeleteAutoReplyRequest struct {
 	Phone string `json:"Phone"`
 }
 
+// Structs for Mode Autoreply functionality
+type ModeAutoreplyRequest struct {
+	ModeName string `json:"ModeName"`
+	Phone    string `json:"Phone"`
+	Message  string `json:"Message"`
+}
+
+type ModeAutoreplyDeleteRequest struct {
+	ModeName string `json:"ModeName"`
+	Phone    string `json:"Phone,omitempty"` // Optional: if not provided, delete all for mode
+}
+
+type EnableModeRequest struct {
+	ModeName string `json:"ModeName"`
+}
+
+type DisableModeRequest struct {
+	ModeName string `json:"ModeName"`
+}
+
+type ModeAutoreplyEntry struct {
+	ModeName string `json:"ModeName"`
+	Phone    string `json:"Phone"`
+	Message  string `json:"Message"`
+}
+
 type Values struct {
 	m map[string]string
 }
@@ -360,6 +386,505 @@ func (s *server) DeleteAutoReply() http.HandlerFunc {
 		s.Respond(w, r, http.StatusOK, string(responseJson))
 	}
 }
+
+// isValidModeName checks if the mode name is purely alphanumeric.
+func isValidModeName(modeName string) bool {
+	if modeName == "" {
+		return false
+	}
+	// Regex for alphanumeric only
+	// For a more robust solution, consider using a proper regex library if more complex rules are needed.
+	// This basic check iterates through runes.
+	for _, r := range modeName {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// AddModeAutoreply handles adding or updating an autoreply message for a specific mode.
+func (s *server) AddModeAutoreply() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req ModeAutoreplyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		modeName := strings.ToLower(req.ModeName)
+		if !isValidModeName(modeName) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
+			return
+		}
+
+		if req.Phone == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
+			return
+		}
+		if req.Message == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Message in Payload"))
+			return
+		}
+
+		var query string
+		dbType := s.db.DriverName()
+		if dbType == "postgres" {
+			query = `INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) 
+                     VALUES ($1, $2, $3, $4) 
+                     ON CONFLICT (user_id, mode_name, phone_number) 
+                     DO UPDATE SET message = EXCLUDED.message;`
+		} else { // sqlite
+			query = `INSERT OR REPLACE INTO autoreply_modes (user_id, mode_name, phone_number, message) 
+                     VALUES (?, ?, ?, ?);`
+		}
+
+		_, err := s.db.Exec(query, txtid, modeName, req.Phone, req.Message)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to add/update mode autoreply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to save mode autoreply"))
+			return
+		}
+
+		response := map[string]string{"detail": "Mode autoreply added/updated successfully"}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusCreated, string(responseJson))
+	}
+}
+
+// DeleteModeAutoreply handles deleting autoreply messages for a specific mode.
+func (s *server) DeleteModeAutoreply() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req ModeAutoreplyDeleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		modeName := strings.ToLower(req.ModeName)
+		if !isValidModeName(modeName) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
+			return
+		}
+
+		var result sql.Result
+		var err error
+
+		if req.Phone != "" {
+			query := "DELETE FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2 AND phone_number = $3"
+			if s.db.DriverName() == "sqlite" {
+				query = "DELETE FROM autoreply_modes WHERE user_id = ? AND mode_name = ? AND phone_number = ?"
+			}
+			result, err = s.db.Exec(query, txtid, modeName, req.Phone)
+		} else {
+			query := "DELETE FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2"
+			if s.db.DriverName() == "sqlite" {
+				query = "DELETE FROM autoreply_modes WHERE user_id = ? AND mode_name = ?"
+			}
+			result, err = s.db.Exec(query, txtid, modeName)
+		}
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to delete mode autoreply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to delete mode autoreply"))
+			return
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		detailMsg := fmt.Sprintf("%d autoreply entry(s) deleted for mode '%s'", rowsAffected, modeName)
+		if rowsAffected == 0 {
+			detailMsg = fmt.Sprintf("No autoreply entries found or deleted for mode '%s'", modeName)
+		}
+
+		response := map[string]string{"detail": detailMsg}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
+
+// GetModeAutoreplies handles fetching autoreply messages, optionally filtered by mode.
+func (s *server) GetModeAutoreplies() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		modeNameParam := r.URL.Query().Get("modeName")
+
+		var rows *sql.Rows
+		var err error
+
+		if modeNameParam != "" {
+			modeName := strings.ToLower(modeNameParam)
+			if !isValidModeName(modeName) {
+				s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid modeName parameter: must be alphanumeric"))
+				return
+			}
+			query := "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2"
+			if s.db.DriverName() == "sqlite" {
+				query = "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = ? AND mode_name = ?"
+			}
+			rows, err = s.db.Query(query, txtid, modeName)
+		} else {
+			query := "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = $1"
+			if s.db.DriverName() == "sqlite" {
+				query = "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = ?"
+			}
+			rows, err = s.db.Query(query, txtid)
+		}
+
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to query mode autoreplies")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve mode autoreplies"))
+			return
+		}
+		defer rows.Close()
+
+		var entries []ModeAutoreplyEntry
+		for rows.Next() {
+			var entry ModeAutoreplyEntry
+			if err := rows.Scan(&entry.ModeName, &entry.Phone, &entry.Message); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to scan mode autoreply row")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process mode autoreply data"))
+				return
+			}
+			entries = append(entries, entry)
+		}
+
+		if err = rows.Err(); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Error iterating mode autoreply rows")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to read mode autoreplies"))
+			return
+		}
+
+		responseJson, _ := json.Marshal(entries)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
+
+// EnableMode activates a specific autoreply mode for the user.
+func (s *server) EnableMode() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req EnableModeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		modeName := strings.ToLower(req.ModeName)
+		if !isValidModeName(modeName) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
+			return
+		}
+		
+		dbType := s.db.DriverName()
+
+		// Start transaction
+		tx, err := s.db.Beginx()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for EnableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode"))
+			return
+		}
+		defer tx.Rollback() // Rollback if not committed
+
+		// 1. Clear current autoreply list for the user
+		clearAutorepliesQuery := "DELETE FROM autoreplies WHERE user_id = $1"
+		if dbType == "sqlite" {
+			clearAutorepliesQuery = "DELETE FROM autoreplies WHERE user_id = ?"
+		}
+		if _, err := tx.Exec(clearAutorepliesQuery, txtid); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to clear autoreplies for EnableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (clear old)"))
+			return
+		}
+
+		// 2. Fetch new numbers and messages for the mode
+		type modeEntry struct {
+			PhoneNumber string `db:"phone_number"`
+			Message     string `db:"message"`
+		}
+		var entriesToActivate []modeEntry
+		fetchModeEntriesQuery := "SELECT phone_number, message FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2"
+		if dbType == "sqlite" {
+			fetchModeEntriesQuery = "SELECT phone_number, message FROM autoreply_modes WHERE user_id = ? AND mode_name = ?"
+		}
+		err = tx.Select(&entriesToActivate, fetchModeEntriesQuery, txtid, modeName)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to fetch mode entries for EnableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (fetch new)"))
+			return
+		}
+		
+		if len(entriesToActivate) == 0 {
+             log.Warn().Str("user_id", txtid).Str("mode_name", modeName).Msg("EnableMode called for a mode with no entries or mode does not exist")
+        }
+
+
+		// 3. Populate autoreply list
+		insertAutoreplyQuery := "INSERT INTO autoreplies (id, user_id, phone_number, reply_body, last_sent_at) VALUES ($1, $2, $3, $4, NULL)"
+		if dbType == "sqlite" {
+			insertAutoreplyQuery = "INSERT INTO autoreplies (id, user_id, phone_number, reply_body, last_sent_at) VALUES (?, ?, ?, ?, NULL)"
+		}
+		stmt, err := tx.Preparex(insertAutoreplyQuery)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to prepare statement for inserting autoreplies")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (prepare insert)"))
+			return
+		}
+		defer stmt.Close()
+
+		for _, entry := range entriesToActivate {
+			newId, idErr := GenerateRandomID()
+			if idErr != nil {
+				log.Error().Err(idErr).Msg("Failed to generate random ID for autoreply entry in EnableMode")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (generate id)"))
+				return
+			}
+			if _, err := stmt.Exec(newId, txtid, entry.PhoneNumber, entry.Message); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to insert autoreply entry in EnableMode")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (insert new)"))
+				return
+			}
+		}
+
+		// 4. Update active mode
+		var updateActiveModeQuery string
+		if dbType == "postgres" {
+			updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES ($1, $2)
+                                 ON CONFLICT(user_id) DO UPDATE SET current_mode_name = EXCLUDED.current_mode_name;`
+		} else { // sqlite
+			updateActiveModeQuery = `INSERT OR REPLACE INTO active_mode (user_id, current_mode_name) VALUES (?, ?);`
+		}
+		if _, err := tx.Exec(updateActiveModeQuery, txtid, modeName); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to update active_mode for EnableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (update active)"))
+			return
+		}
+
+		// Commit transaction
+		if err := tx.Commit(); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for EnableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (commit)"))
+			return
+		}
+		
+		detailMsg := fmt.Sprintf("Mode '%s' enabled successfully. %d autoreplies activated.", modeName, len(entriesToActivate))
+		response := map[string]string{"detail": detailMsg}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
+
+// DisableMode deactivates a specific autoreply mode if it's currently active.
+func (s *server) DisableMode() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req DisableModeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		modeName := strings.ToLower(req.ModeName)
+		if !isValidModeName(modeName) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
+			return
+		}
+		
+		dbType := s.db.DriverName()
+
+		// Start transaction
+		tx, err := s.db.Beginx()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for DisableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode"))
+			return
+		}
+		defer tx.Rollback()
+
+		// Check if it's the active mode
+		var currentActiveMode sql.NullString
+		getActiveModeQuery := "SELECT current_mode_name FROM active_mode WHERE user_id = $1"
+		if dbType == "sqlite" {
+			getActiveModeQuery = "SELECT current_mode_name FROM active_mode WHERE user_id = ?"
+		}
+		err = tx.Get(&currentActiveMode, getActiveModeQuery, txtid)
+		if err != nil && err != sql.ErrNoRows {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to query active_mode for DisableMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (check active)"))
+			return
+		}
+
+		if currentActiveMode.Valid && currentActiveMode.String == modeName {
+			// Clear autoreplies
+			clearAutorepliesQuery := "DELETE FROM autoreplies WHERE user_id = $1"
+			if dbType == "sqlite" {
+				clearAutorepliesQuery = "DELETE FROM autoreplies WHERE user_id = ?"
+			}
+			if _, err := tx.Exec(clearAutorepliesQuery, txtid); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to clear autoreplies for DisableMode")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (clear replies)"))
+				return
+			}
+
+			// Update active_mode to NULL
+			updateActiveModeQuery := "UPDATE active_mode SET current_mode_name = NULL WHERE user_id = $1"
+			if dbType == "sqlite" {
+				updateActiveModeQuery = "UPDATE active_mode SET current_mode_name = NULL WHERE user_id = ?"
+			}
+			if _, err := tx.Exec(updateActiveModeQuery, txtid); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to set active_mode to NULL for DisableMode")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (set null)"))
+				return
+			}
+			
+			// Commit transaction
+			if err := tx.Commit(); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for DisableMode")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (commit)"))
+				return
+			}
+			response := map[string]string{"detail": fmt.Sprintf("Mode '%s' disabled successfully.", modeName)}
+			responseJson, _ := json.Marshal(response)
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		} else {
+			// Mode was not active, or no mode was active. Still a success from client perspective.
+			// No need to commit as no changes were made in this path.
+			response := map[string]string{"detail": fmt.Sprintf("Mode '%s' was not active or does not exist. No changes made.", modeName)}
+			responseJson, _ := json.Marshal(response)
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}
+
+// GetCurrentMode retrieves the currently active autoreply mode for the user.
+func (s *server) GetCurrentMode() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		
+		dbType := s.db.DriverName()
+
+		var currentMode sql.NullString
+		query := "SELECT current_mode_name FROM active_mode WHERE user_id = $1"
+		if dbType == "sqlite" {
+			query = "SELECT current_mode_name FROM active_mode WHERE user_id = ?"
+		}
+		err := s.db.Get(&currentMode, query, txtid)
+
+		if err != nil && err != sql.ErrNoRows {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to get current mode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve current mode"))
+			return
+		}
+
+		var modeNameStr string
+		if currentMode.Valid {
+			modeNameStr = currentMode.String
+		} else {
+			modeNameStr = "" // Or null, depending on desired JSON output for no active mode
+		}
+		
+		response := map[string]interface{}{"current_mode_name": modeNameStr}
+		if !currentMode.Valid {
+             response = map[string]interface{}{"current_mode_name": nil}
+        }
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
+
+// ClearModes deactivates any active mode and clears all autoreplies for the user.
+func (s *server) ClearModes() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		dbType := s.db.DriverName()
+
+		tx, err := s.db.Beginx()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for ClearModes")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes"))
+			return
+		}
+		defer tx.Rollback()
+
+		// Clear autoreplies
+		clearAutorepliesQuery := "DELETE FROM autoreplies WHERE user_id = $1"
+		if dbType == "sqlite" {
+			clearAutorepliesQuery = "DELETE FROM autoreplies WHERE user_id = ?"
+		}
+		if _, err := tx.Exec(clearAutorepliesQuery, txtid); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to clear autoreplies for ClearModes")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (clear replies)"))
+			return
+		}
+
+		// Update active_mode to NULL
+		// Ensure row exists for user before updating, or use INSERT ON CONFLICT for active_mode as well
+		var updateActiveModeQuery string
+		if dbType == "postgres" {
+			updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES ($1, NULL)
+                                 ON CONFLICT(user_id) DO UPDATE SET current_mode_name = NULL;`
+		} else { // sqlite
+			// Check if user exists in active_mode, if not, insert. Otherwise, update.
+			// This is safer than just UPDATE if a user might not have an entry yet.
+			updateActiveModeQuery = `INSERT OR REPLACE INTO active_mode (user_id, current_mode_name) 
+                                     VALUES (?, (SELECT current_mode_name FROM active_mode WHERE user_id = ?));` // Keep existing if any, then set to NULL
+            // Simpler: Just ensure it's NULL. If the row doesn't exist, this is fine. If it does, it sets to NULL.
+            // However, to ensure the row exists for future GetCurrentMode calls to not return ErrNoRows (unless that's desired), 
+            // an UPSERT type logic is better.
+            updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES (?, NULL)
+                                     ON CONFLICT(user_id) DO UPDATE SET current_mode_name = NULL;` // For SQLite 3.24+
+            // For older SQLite, might need:
+            // _, err = tx.Exec("UPDATE active_mode SET current_mode_name = NULL WHERE user_id = ?", txtid)
+            // if err == nil { /* check rows affected, if 0 then insert */ }
+            // For simplicity and matching PostgreSQL, using the ON CONFLICT approach for SQLite too, assuming modern version.
+		}
+        // Corrected SQLite strategy for ClearModes:
+        // Ensure a row for the user exists in active_mode and set its current_mode_name to NULL.
+        if dbType == "sqlite" {
+             // First, try to update. If no rows are affected, it means the user might not have an entry.
+            res, err_update := tx.Exec("UPDATE active_mode SET current_mode_name = NULL WHERE user_id = ?", txtid)
+            if err_update != nil {
+                log.Error().Err(err_update).Str("user_id", txtid).Msg("Failed to update active_mode to NULL for ClearModes (SQLite)")
+                s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (set null)"))
+                return
+            }
+            rowsAffected, _ := res.RowsAffected()
+            if rowsAffected == 0 {
+                // No existing row, so insert one with NULL mode_name.
+                _, err_insert := tx.Exec("INSERT INTO active_mode (user_id, current_mode_name) VALUES (?, NULL)", txtid)
+                if err_insert != nil {
+                    log.Error().Err(err_insert).Str("user_id", txtid).Msg("Failed to insert into active_mode for ClearModes (SQLite)")
+                    s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (insert null)"))
+                    return
+                }
+            }
+        } else { // PostgreSQL
+            if _, err := tx.Exec(updateActiveModeQuery, txtid); err != nil {
+                log.Error().Err(err).Str("user_id", txtid).Msg("Failed to set active_mode to NULL for ClearModes (Postgres)")
+                s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (set null)"))
+                return
+            }
+        }
+
+
+		if err := tx.Commit(); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for ClearModes")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (commit)"))
+			return
+		}
+
+		response := map[string]string{"detail": "All modes cleared and current mode deactivated successfully."}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
+
 
 // Disconnects from Whatsapp websocket, does not log out device
 func (s *server) Disconnect() http.HandlerFunc {
