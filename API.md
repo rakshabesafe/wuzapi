@@ -705,6 +705,64 @@ curl -s -X POST -H 'Token: 1234ABCD' -H 'Content-Type: application/json' --data 
 
 ---
 
+### Add/Update Auto-Reply
+* **Method:** `POST`
+* **Path:** `/chat/autoreply`
+* **Description:** Sets up an auto-reply for a specific phone number. If an auto-reply for the given phone number already exists for the user, it will be updated. If not, a new one will be created.
+* **Authentication:** Requires user token.
+* **Request Body (JSON):**
+  ```json
+  {
+    "Phone": "1234567890", // Target phone number (normalized, e.g., digits only or international format used by the system)
+    "Body": "Hello! I am currently unavailable and will get back to you soon."
+  }
+  ```
+* **Responses:**
+  * `201 Created`: If a new auto-reply was successfully created.
+    ```json
+    {
+      "code": 201,
+      "data": {
+        "detail": "Auto-reply added successfully",
+        "id": "generated-unique-id-for-the-rule"
+      },
+      "success": true
+    }
+    ```
+  * `400 Bad Request`: If `Phone` or `Body` is missing or invalid.
+  * `409 Conflict`: If an auto-reply for this phone number already exists for the user.
+  * `500 Internal Server Error`: For other server-side errors.
+
+---
+
+### Delete Auto-Reply
+* **Method:** `DELETE`
+* **Path:** `/chat/autoreply`
+* **Description:** Deletes an existing auto-reply for a specific phone number for the authenticated user.
+* **Authentication:** Requires user token.
+* **Request Body (JSON):**
+  ```json
+  {
+    "Phone": "1234567890" // Target phone number whose auto-reply rule should be deleted.
+  }
+  ```
+* **Responses:**
+  * `200 OK`: If the auto-reply was successfully deleted.
+    ```json
+    {
+      "code": 200,
+      "data": {
+        "detail": "Auto-reply deleted successfully"
+      },
+      "success": true
+    }
+    ```
+  * `400 Bad Request`: If `Phone` is missing or invalid.
+  * `404 Not Found`: If no auto-reply rule exists for the given phone number for this user.
+  * `500 Internal Server Error`: For other server-side errors.
+
+---
+
 ## Download Document
 
 Downloads a Document from a message and retrieves it Base64 media encoded. Required request parameters are: Url, MediaKey, Mimetype, FileSHA256 and FileLength

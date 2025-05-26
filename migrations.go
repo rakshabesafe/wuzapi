@@ -45,7 +45,40 @@ var migrations = []Migration{
 		Name:  "change_id_to_string",
 		UpSQL: changeIDToStringSQL,
 	},
+	{
+		ID:    4,
+		Name:  "add_autoreplies_table",
+		UpSQL: addAutorepliesTableSQLPostgres,
+	},
 }
+
+const addAutorepliesTableSQLPostgres = `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'autoreplies') THEN
+        CREATE TABLE autoreplies (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            phone_number TEXT NOT NULL,
+            reply_body TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, phone_number)
+        );
+    END IF;
+END $$;
+`
+
+const addAutorepliesTableSQLSQLite = `
+CREATE TABLE autoreplies (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    phone_number TEXT NOT NULL,
+    reply_body TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, phone_number)
+)
+`
 
 const changeIDToStringSQL = `
 -- Migration to change ID from integer to random string
@@ -225,6 +258,12 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 	} else if migration.ID == 3 {
 		if db.DriverName() == "sqlite" {
 			err = migrateSQLiteIDToString(tx)
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 4 {
+		if db.DriverName() == "sqlite" {
+			err = createTableIfNotExistsSQLite(tx, "autoreplies", addAutorepliesTableSQLSQLite)
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
