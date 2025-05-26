@@ -31,6 +31,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+type AutoReplyRequest struct {
+	Phone string `json:"Phone"`
+	Body  string `json:"Body"`
+}
+
+type DeleteAutoReplyRequest struct {
+	Phone string `json:"Phone"`
+}
+
 type Values struct {
 	m map[string]string
 }
@@ -199,6 +208,103 @@ func (s *server) Connect() http.HandlerFunc {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 			return
 		}
+	}
+}
+
+// AddAutoReply handles adding a new auto-reply entry for a user.
+func (s *server) AddAutoReply() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req AutoReplyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		if req.Phone == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
+			return
+		}
+		if req.Body == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Body in Payload"))
+			return
+		}
+
+		newId, err := GenerateRandomID() // Assuming GenerateRandomID is accessible from migrations.go
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to generate random ID for auto-reply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to create auto-reply entry"))
+			return
+		}
+
+		_, err = s.db.Exec("INSERT INTO autoreplies (id, user_id, phone_number, reply_body) VALUES ($1, $2, $3, $4)", newId, txtid, req.Phone, req.Body)
+		if err != nil {
+			// Check for unique constraint violation (specific error code might depend on DB: PostgreSQL uses "23505")
+			// This is a simplified check; a more robust way involves checking pq.Error.Code or sqlite3.ErrConstraintUnique
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+				s.Respond(w, r, http.StatusConflict, errors.New("Auto-reply for this phone number already exists for the user"))
+				return
+			}
+			log.Error().Err(err).Str("user_id", txtid).Str("phone", req.Phone).Msg("Failed to add auto-reply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to add auto-reply"))
+			return
+		}
+
+		response := map[string]string{"detail": "Auto-reply added successfully", "id": newId}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal success response for AddAutoReply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to create auto-reply entry"))
+			return
+		}
+		s.Respond(w, r, http.StatusCreated, string(responseJson))
+	}
+}
+
+// DeleteAutoReply handles deleting an auto-reply entry for a user.
+func (s *server) DeleteAutoReply() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req DeleteAutoReplyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		if req.Phone == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
+			return
+		}
+
+		result, err := s.db.Exec("DELETE FROM autoreplies WHERE user_id = $1 AND phone_number = $2", txtid, req.Phone)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("phone", req.Phone).Msg("Failed to delete auto-reply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to delete auto-reply"))
+			return
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("phone", req.Phone).Msg("Failed to check affected rows after delete")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to confirm deletion status"))
+			return
+		}
+
+		if rowsAffected == 0 {
+			s.Respond(w, r, http.StatusNotFound, errors.New("Auto-reply not found for this user and phone number"))
+			return
+		}
+
+		response := map[string]string{"detail": "Auto-reply deleted successfully"}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal success response for DeleteAutoReply")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process deletion confirmation")) // Should ideally not happen
+			return
+		}
+		s.Respond(w, r, http.StatusOK, string(responseJson))
 	}
 }
 
