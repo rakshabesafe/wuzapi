@@ -70,7 +70,7 @@ func TestMain(m *testing.M) {
 	// Pre-populate cache for test users
 	userinfocache.Set(testUserToken1, Values{map[string]string{"Id": testUserID1, "Name": "Test User 1"}}, cache.NoExpiration)
 	userinfocache.Set(testUserToken2, Values{map[string]string{"Id": testUserID2, "Name": "Test User 2"}}, cache.NoExpiration)
-	
+
 	// Initialize killchannel (global variable used by server)
 	killchannel = make(map[string]chan bool)
 
@@ -132,7 +132,7 @@ func setupTestDB() (*sqlx.DB, error) {
             phone_number TEXT NOT NULL,
             reply_body TEXT NOT NULL,
             last_sent_at TIMESTAMP NULLABLE,
-            UNIQUE (user_id, phone_number) 
+            UNIQUE (user_id, phone_number)
         );`, // Added from original migration
 	}
 
@@ -170,7 +170,7 @@ func newAuthenticatedRequest(t *testing.T, method, path string, body io.Reader, 
 	req, err := http.NewRequest(method, testServer.URL+path, body)
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	// Simulate authalice middleware by setting userinfo in context
 	// In a real scenario, authalice would fetch this from DB or cache based on token
 	// For testing, we directly create the Values struct and put it in context.
@@ -295,7 +295,7 @@ func TestAddModeAutoreply(t *testing.T) {
 				tc.dbChecks(t, tc.userID)
 			}
 			// Clean up only this user's data if needed for next sub-test, or rely on defer clearAllTables
-			// clearUserSpecificData(testDB, tc.userID, "autoreply_modes") 
+			// clearUserSpecificData(testDB, tc.userID, "autoreply_modes")
 		})
 	}
 }
@@ -346,7 +346,7 @@ func TestDeleteModeAutoreply(t *testing.T) {
 			payload:   ModeAutoreplyDeleteRequest{ModeName: "holiday"}, // No phone specified
 			expectedStatus: http.StatusOK,
 			// After previous test, only '456' is left in 'holiday' mode
-			expectedDetailRegex: `1 autoreply entry\(s\) deleted for mode 'holiday'`, 
+			expectedDetailRegex: `1 autoreply entry\(s\) deleted for mode 'holiday'`,
 			dbChecks: func(t *testing.T, userID string) {
 				var count int
 				err := testDB.Get(&count, "SELECT COUNT(*) FROM autoreply_modes WHERE user_id = ? AND mode_name = 'holiday'", userID)
@@ -391,7 +391,7 @@ func TestDeleteModeAutoreply(t *testing.T) {
 
 			assert.Equal(t, tc.expectedStatus, rr.Code)
 			bodyString := rr.Body.String()
-			
+
 			match, _ := regexp.MatchString(tc.expectedDetailRegex, bodyString)
 			assert.True(t, match, "Response body detail mismatch. Expected regex: %s, Got: %s", tc.expectedDetailRegex, bodyString)
 
@@ -598,7 +598,7 @@ func TestEnableMode(t *testing.T) {
 			userID:    testUserID1,
 			userToken: testUserToken1,
 			payload:   EnableModeRequest{ModeName: "nonexistent"},
-			expectedStatus: http.StatusOK, 
+			expectedStatus: http.StatusOK,
 			expectedDetailRegex: `Mode 'nonexistent' enabled successfully. 0 autoreplies activated.`,
 		},
 		{
@@ -769,9 +769,9 @@ func TestGetCurrentMode(t *testing.T) {
 
 	// Setup: User1 has 'holiday' active. User2 has no entry in active_mode. User3 has entry but NULL.
 	_, _ = testDB.Exec("INSERT INTO active_mode (user_id, current_mode_name) VALUES (?, ?)", testUserID1, "holiday")
-    
+
     // User testUserID2 has no entry in active_mode
-    
+
     // User "testuser3" for NULL mode
     testUserID3 := "testuser3"
     testUserToken3 := "test_user_token_3"
@@ -806,7 +806,7 @@ func TestGetCurrentMode(t *testing.T) {
 			userID:    testUserID3,
 			userToken: testUserToken3,
 			expectedStatus: http.StatusOK,
-			expectedMode:   nil, 
+			expectedMode:   nil,
 		},
 	}
 
@@ -923,6 +923,359 @@ func TestIsValidModeName(t *testing.T) {
 	assert.False(t, isValidModeName(""))
 	assert.False(t, isValidModeName(" test"))
 }
+
+func TestNormalizePhoneNumber(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expected      string
+		expectError   bool
+		expectedError string
+	}{
+		{"empty input", "", "", true, "phone number is empty after cleaning"},
+		{"short input", "12345", "", true, "phone number '12345' has invalid length after normalization"},
+		{"long input", "1234567890123456", "", true, "phone number '1234567890123456' has invalid length after normalization"},
+		{"invalid chars", "abc", "", true, "phone number is empty after cleaning"},
+		{"valid 10 digit (India)", "9876543210", "919876543210", false, ""},
+		{"valid 10 digit with spaces (India)", " 98765 43210 ", "919876543210", false, ""},
+		{"valid US with + and hyphens", "+1-555-123-4567", "15551234567", false, ""},
+		{"valid US with () and spaces", " (555) 876-5432 ", "5558765432", false, ""}, // Assuming non-prefixed 10-digit becomes Indian
+		{"valid UK with + and hyphens", "+44-20-1234-5678", "442012345678", false, ""},
+		{"just +", "+", "", true, "phone number is empty after cleaning"},
+		{"valid with extension (not handled, cleaned)", "+1234567890x123", "1234567890123", false, ""}, // x123 is cleaned out
+		{"leading zeros", "0011234567890", "11234567890", false, ""}, // Assuming 00 is not a country code here, simple cleaning
+		{"already normalized with 91", "919988776655", "919988776655", false, ""},
+		{"already normalized US", "18005551212", "18005551212", false, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized, err := normalizePhoneNumber(tc.input)
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.expectedError != "" {
+					assert.Contains(t, err.Error(), tc.expectedError)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expected, normalized)
+			}
+		})
+	}
+	// Correcting a specific case based on current normalizePhoneNumber logic
+    // " (555) 876-5432 " will become "5558765432", and then prefixed with "91"
+    // because it's 10 digits and does not start with '+'.
+    t.Run("US number without plus becomes indian", func(t *testing.T){
+        normalized, err := normalizePhoneNumber(" (555) 876-5432 ")
+        assert.NoError(t, err)
+        assert.Equal(t, "915558765432", normalized)
+    })
+}
+
+
+// Helper function to set google_contacts_auth_token for a user
+func setGoogleTokenForUser(t *testing.T, userID, token string) {
+	_, err := testDB.Exec("UPDATE users SET google_contacts_auth_token = ? WHERE id = ?", token, userID)
+	require.NoError(t, err, "Failed to set Google token for user %s", userID)
+}
+
+
+func TestSetGoogleContactsAuthToken(t *testing.T) {
+	defer clearAllTables(testDB)
+
+	tests := []struct {
+		name           string
+		userID         string
+		userToken      string
+		payload        AuthTokenRequest
+		expectedStatus int
+		expectedBody   string
+		dbCheck        func(t *testing.T, userID string, expectedToken string)
+	}{
+		{
+			name:      "Successful token storage",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   AuthTokenRequest{AuthToken: "sample-google-token-123"},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"detail":"Auth token stored successfully"`,
+			dbCheck: func(t *testing.T, userID string, expectedToken string) {
+				var token sql.NullString
+				err := testDB.Get(&token, "SELECT google_contacts_auth_token FROM users WHERE id = ?", userID)
+				require.NoError(t, err)
+				require.True(t, token.Valid)
+				assert.Equal(t, expectedToken, token.String)
+			},
+		},
+		{
+			name:      "Empty token in payload",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   AuthTokenRequest{AuthToken: "  "}, // Whitespace only
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `"error":"Missing AuthToken in Payload"`,
+		},
+		{
+			name:      "Update existing token",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   AuthTokenRequest{AuthToken: "new-updated-token-456"},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"detail":"Auth token stored successfully"`,
+			dbCheck: func(t *testing.T, userID string, expectedToken string) {
+				var token sql.NullString
+				err := testDB.Get(&token, "SELECT google_contacts_auth_token FROM users WHERE id = ?", userID)
+				require.NoError(t, err)
+				require.True(t, token.Valid)
+				assert.Equal(t, expectedToken, token.String)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// For "Update existing token", first set an initial token
+			if tc.name == "Update existing token" {
+				setGoogleTokenForUser(t, testUserID1, "initial-token-000")
+			}
+
+			jsonBody, err := json.Marshal(tc.payload)
+			require.NoError(t, err)
+
+			req := newAuthenticatedRequest(t, "POST", "/autoreply/contactgroupauth", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			rr := httptest.NewRecorder()
+			testRouter.ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.expectedStatus, rr.Code)
+			assert.Contains(t, rr.Body.String(), tc.expectedBody)
+
+			if tc.dbCheck != nil {
+				tc.dbCheck(t, tc.userID, tc.payload.AuthToken)
+			}
+		})
+	}
+}
+
+
+func TestAddContactGroupToMode(t *testing.T) {
+	defer clearAllTables(testDB)
+
+	// Pre-set auth token for testUserID1
+	setGoogleTokenForUser(t, testUserID1, "valid-google-token")
+
+	tests := []struct {
+		name            string
+		userID          string
+		userToken       string
+		payload         ContactGroupRequest
+		expectedStatus  int
+		expectedBodyRegex string // Regex for detailed message checks
+		dbChecks        func(t *testing.T, userID, modeName string)
+	}{
+		{
+			name:      "Successful add - default group",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "Holiday", GroupName: "Default Google Group", Message: "Away on holiday!"},
+			expectedStatus: http.StatusOK,
+			expectedBodyRegex: `3 contacts processed and added/updated for mode 'holiday'. 3 contacts skipped.`, // Based on placeholder's default
+			dbChecks: func(t *testing.T, userID, modeName string) {
+				var count int
+				// Expected normalized numbers from placeholder: "11234567890", "919876543210", "442012345678"
+				err := testDB.Get(&count, "SELECT COUNT(*) FROM autoreply_modes WHERE user_id = ? AND mode_name = ?", userID, strings.ToLower(modeName))
+				require.NoError(t, err)
+				assert.Equal(t, 3, count, "Should have 3 valid contacts added")
+
+				var msg string
+				err = testDB.Get(&msg, "SELECT message FROM autoreply_modes WHERE user_id = ? AND mode_name = ? AND phone_number = ?", userID, strings.ToLower(modeName), "919876543210")
+				require.NoError(t, err)
+				assert.Equal(t, "Away on holiday!", msg)
+			},
+		},
+		{
+			name:      "Add with 'work contacts' group",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "WorkMode", GroupName: "Work Contacts", Message: "Busy with work!"},
+			expectedStatus: http.StatusOK,
+			expectedBodyRegex: `2 contacts processed and added/updated for mode 'workmode'. 0 contacts skipped.`,
+			dbChecks: func(t *testing.T, userID, modeName string) {
+				var entries []ModeAutoreplyEntry
+				err := testDB.Select(&entries, "SELECT phone_number, message FROM autoreply_modes WHERE user_id = ? AND mode_name = ?", userID, strings.ToLower(modeName))
+				require.NoError(t, err)
+				assert.Len(t, entries, 2)
+				expectedPhones := map[string]bool{"15551234567": false, "915558765432": false} // 5558765432 becomes 915558765432
+				for _, e := range entries {
+					if _, ok := expectedPhones[e.Phone]; ok {
+						expectedPhones[e.Phone] = true
+						assert.Equal(t, "Busy with work!", e.Message)
+					}
+				}
+				for phone, found := range expectedPhones {
+					assert.True(t, found, "Expected phone %s not found", phone)
+				}
+			},
+		},
+		{
+			name:      "Token not configured for user",
+			userID:    testUserID2, // UserID2 has no token set yet
+			userToken: testUserToken2,
+			payload:   ContactGroupRequest{ModeName: "AnyMode", GroupName: "AnyGroup", Message: "Msg"},
+			expectedStatus: http.StatusForbidden,
+			expectedBodyRegex: `"error":"Google Contacts API token not configured`,
+		},
+		{
+			name:      "Invalid ModeName",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "Invalid!", GroupName: "AnyGroup", Message: "Msg"},
+			expectedStatus: http.StatusBadRequest,
+			expectedBodyRegex: `"error":"Invalid ModeName: must be alphanumeric"`,
+		},
+		{
+			name:      "Missing GroupName",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "ValidMode", GroupName: " ", Message: "Msg"},
+			expectedStatus: http.StatusBadRequest,
+			expectedBodyRegex: `"error":"Missing GroupName in Payload"`,
+		},
+		{
+			name:      "fetchContactsFromGoogleGroup returns error",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "ErrorTest", GroupName: "errorgroup", Message: "This will fail"},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBodyRegex: `"error":"Failed to process contact group"`,
+		},
+		{
+			name:      "fetchContactsFromGoogleGroup returns empty list",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "EmptyTest", GroupName: "emptygroup", Message: "No one here"},
+			expectedStatus: http.StatusOK, // The handler returns 200 with a specific error message in the body for an empty contact list
+			expectedBodyRegex: `"error":"No contacts found or processed for group 'emptygroup'."`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jsonBody, err := json.Marshal(tc.payload)
+			require.NoError(t, err)
+
+			req := newAuthenticatedRequest(t, "POST", "/autoreply/contactgroup", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			rr := httptest.NewRecorder()
+			testRouter.ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.expectedStatus, rr.Code)
+			bodyString := rr.Body.String()
+			match, _ := regexp.MatchString(tc.expectedBodyRegex, bodyString)
+			assert.True(t, match, "Response body regex mismatch.\nExpected regex: %s\nGot: %s", tc.expectedBodyRegex, bodyString)
+
+			if tc.dbChecks != nil {
+				tc.dbChecks(t, tc.userID, tc.payload.ModeName)
+			}
+		})
+	}
+}
+
+
+func TestDeleteContactGroupFromMode(t *testing.T) {
+	defer clearAllTables(testDB)
+
+	// Pre-set auth token for testUserID1
+	setGoogleTokenForUser(t, testUserID1, "valid-google-token")
+	// Setup initial data for User1, Mode "cleaningmode"
+	// Contacts from default placeholder: "11234567890", "919876543210", "442012345678"
+	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "11234567890", "To be deleted")
+	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "919876543210", "Also deleted")
+	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "442012345678", "This one too")
+	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "0000000000", "Keep this one") // Not in placeholder group
+
+	tests := []struct{
+		name            string
+		userID          string
+		userToken       string
+		payload         ContactGroupDeleteRequest
+		expectedStatus  int
+		expectedBodyRegex string
+		dbChecks        func(t *testing.T, userID, modeName string)
+	}{
+		{
+			name:      "Successful delete - default group",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "CleaningMode", GroupName: "Default Google Group"}, // Uses default placeholder
+			expectedStatus: http.StatusOK,
+			// Placeholder has 6 contacts, 3 invalid/empty, 3 valid. So 3 processed, 3 deleted.
+			expectedBodyRegex: `3 contacts from group 'Default Google Group' processed for deletion from mode 'cleaningmode'. 3 entries actually deleted. 3 contacts skipped.`,
+			dbChecks: func(t *testing.T, userID, modeName string) {
+				var count int
+				err := testDB.Get(&count, "SELECT COUNT(*) FROM autoreply_modes WHERE user_id = ? AND mode_name = ?", userID, strings.ToLower(modeName))
+				require.NoError(t, err)
+				assert.Equal(t, 1, count, "Only the '0000000000' contact should remain")
+
+				var phone string
+				err = testDB.Get(&phone, "SELECT phone_number FROM autoreply_modes WHERE user_id = ? AND mode_name = ?", userID, strings.ToLower(modeName))
+				require.NoError(t, err)
+				assert.Equal(t, "0000000000", phone)
+			},
+		},
+		{
+			name:      "Token not configured for user",
+			userID:    testUserID2,
+			userToken: testUserToken2,
+			payload:   ContactGroupDeleteRequest{ModeName: "AnyMode", GroupName: "AnyGroup"},
+			expectedStatus: http.StatusForbidden,
+			expectedBodyRegex: `"error":"Google Contacts API token not configured`,
+		},
+		{
+			name:      "Invalid ModeName for delete",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "Invalid!", GroupName: "AnyGroup"},
+			expectedStatus: http.StatusBadRequest,
+			expectedBodyRegex: `"error":"Invalid ModeName: must be alphanumeric"`,
+		},
+		{
+			name:      "fetchContactsFromGoogleGroup returns error on delete",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "ErrorTest", GroupName: "errorgroup"},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBodyRegex: `"error":"Failed to process contact group for deletion"`,
+		},
+		{
+			name:      "Delete with empty contact group",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "AnyMode", GroupName: "emptygroup"},
+			expectedStatus: http.StatusOK,
+			expectedBodyRegex: `"error":"No contacts found in group 'emptygroup' to process for deletion."`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jsonBody, err := json.Marshal(tc.payload)
+			require.NoError(t, err)
+
+			req := newAuthenticatedRequest(t, "DELETE", "/autoreply/contactgroup", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			rr := httptest.NewRecorder()
+			testRouter.ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.expectedStatus, rr.Code)
+			bodyString := rr.Body.String()
+			match, _ := regexp.MatchString(tc.expectedBodyRegex, bodyString)
+			assert.True(t, match, "Response body regex mismatch.\nExpected regex: %s\nGot: %s", tc.expectedBodyRegex, bodyString)
+
+			if tc.dbChecks != nil {
+				tc.dbChecks(t, tc.userID, tc.payload.ModeName)
+			}
+		})
+	}
+}
+
 
 // Helper to get string value from sql.NullString for assertions
 func nullStringValue(ns sql.NullString) string {

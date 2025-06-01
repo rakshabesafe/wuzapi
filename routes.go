@@ -114,6 +114,11 @@ func (s *server) routes() {
 	s.router.Handle("/mode/currentmode", c.Then(s.GetCurrentMode())).Methods("GET")
 	s.router.Handle("/mode/clear", c.Then(s.ClearModes())).Methods("POST")
 
+	// Autoreply Contact Group Routes
+	s.router.Handle("/autoreply/contactgroupauth", c.Then(s.SetGoogleContactsAuthToken())).Methods("POST")
+	s.router.Handle("/autoreply/contactgroup", c.Then(s.AddContactGroupToMode())).Methods("POST")
+	s.router.Handle("/autoreply/contactgroup", c.Then(s.DeleteContactGroupFromMode())).Methods("DELETE")
+
 	s.router.Handle("/user/presence", c.Then(s.SendPresence())).Methods("POST")
 	s.router.Handle("/user/info", c.Then(s.GetUser())).Methods("POST")
 	s.router.Handle("/user/check", c.Then(s.CheckUser())).Methods("POST")

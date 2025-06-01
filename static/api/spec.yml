@@ -1432,8 +1432,158 @@ paths:
         "500":
           description: Internal Server Error.
 
+  /autoreply/contactgroupauth:
+    post:
+      tags:
+        - Autoreply Contacts
+      summary: Store Google Contacts API Auth Token
+      description: Stores or updates the Google OAuth2 access token for the authenticated user, enabling integration with Google Contacts.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/AuthTokenRequest'
+      responses:
+        "200":
+          description: Auth token stored successfully.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "Auth token stored successfully"}, "success": true}
+        "400":
+          description: Bad Request (e.g., missing AuthToken).
+          content:
+            application/json:
+              schema:
+                example: {"code": 400, "error": "Missing AuthToken in Payload", "success": false}
+        "500":
+          description: Internal Server Error.
+
+  /autoreply/contactgroup:
+    post:
+      tags:
+        - Autoreply Contacts
+      summary: Add contacts from a Google Contacts group to an autoreply mode
+      description: Fetches contacts from a specified Google Contacts group (using a stored auth token) and adds/updates them in the specified autoreply mode with the given message.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/ContactGroupRequest'
+      responses:
+        "200":
+          description: Contacts processed and added/updated for the mode.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "3 contacts processed and added/updated for mode 'work'. 1 contacts skipped."}, "success": true}
+        "400":
+          description: Bad Request (e.g., missing fields, invalid ModeName).
+        "403":
+          description: Forbidden (Google Contacts API token not configured).
+          content:
+            application/json:
+              schema:
+                example: {"code": 403, "error": "Google Contacts API token not configured. Please use /autoreply/contactgroupauth.", "success": false}
+        "500":
+          description: Internal Server Error.
+    delete:
+      tags:
+        - Autoreply Contacts
+      summary: Remove contacts from a Google Contacts group from an autoreply mode
+      description: Fetches contacts from a specified Google Contacts group (using a stored auth token) and removes them from the specified autoreply mode.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/ContactGroupDeleteRequest'
+      responses:
+        "200":
+          description: Contacts processed for deletion from the mode.
+          content:
+            application/json:
+              schema:
+                example: {"code": 200, "data": {"detail": "3 contacts from group 'Friends' processed for deletion from mode 'weekend'. 2 entries actually deleted. 1 contacts skipped."}, "success": true}
+        "400":
+          description: Bad Request (e.g., missing fields, invalid ModeName).
+        "403":
+          description: Forbidden (Google Contacts API token not configured).
+        "500":
+          description: Internal Server Error.
+
 definitions:
-  ModeAutoreplyRequest:
+  AuthTokenRequest:
+    type: object
+    required:
+      - AuthToken
+    properties:
+      AuthToken:
+        type: string
+        description: "User-provided Google OAuth2 Access Token."
+        example: "ya29.a0AfH6SM..."
+  AutoReplyEntry: # Existing definition, ensure new ones are placed correctly relative to it.
+    type: object
+    properties:
+      phone:
+        type: string
+        description: "The phone number for which the auto-reply is configured."
+        example: "1234567890"
+      body:
+        type: string
+        description: "The message body of the auto-reply."
+        example: "I'm currently unavailable. I'll get back to you soon."
+      last_sent_at:
+        type: string
+        format: date-time
+        description: "The timestamp when this auto-reply was last sent. Omitted if never sent or if the value is null."
+        example: "2023-10-27T10:30:00Z"
+        nullable: true
+    required:
+      - phone
+      - body
+  ContactGroupDeleteRequest:
+    type: object
+    required:
+      - ModeName
+      - GroupName
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode (alphanumeric)."
+        example: "work"
+      GroupName:
+        type: string
+        description: "Name of the Google Contacts group whose members will be removed from the mode."
+        example: "Old Colleagues"
+  ContactGroupRequest:
+    type: object
+    required:
+      - ModeName
+      - GroupName
+      - Message
+    properties:
+      ModeName:
+        type: string
+        description: "Name of the mode to associate contacts with (alphanumeric)."
+        example: "work"
+      GroupName:
+        type: string
+        description: "Name of the Google Contacts group to fetch contacts from."
+        example: "Colleagues"
+      Message:
+        type: string
+        description: "Autoreply message for these contacts within the specified mode."
+        example: "Currently busy with work tasks."
+  ModeAutoreplyRequest: # Existing definition
     type: object
     required:
       - ModeName
