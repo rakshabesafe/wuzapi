@@ -142,38 +142,232 @@ func normalizePhoneNumber(phone string) (string, error) {
 }
 
 
-// fetchContactsFromGoogleGroup is a placeholder function to simulate fetching contacts.
-// TODO: Replace with actual Google Contacts API call in a future step.
-func fetchContactsFromGoogleGroup(authToken string, groupName string, forUser string) ([]map[string]string, error) {
-	log.Info().Str("user_id", forUser).Str("groupName", groupName).Msg("Simulating fetching contacts from Google Group")
-	// Simulate an error if a specific group name is used for testing error paths
-	if groupName == "errorgroup" {
-		return nil, errors.New("simulated error fetching contacts from Google Group")
-	}
-
-	// Simulate different contact lists based on groupName for more dynamic testing
-	if strings.ToLower(groupName) == "work contacts" {
-		return []map[string]string{
-			{"name": "Alice Smith", "phoneNumber": "+15551234567"},
-			{"name": "Bob Johnson", "phoneNumber": " (555) 876-5432"}, // Needs cleaning
-		}, nil
-	}
-	if strings.ToLower(groupName) == "emptygroup" {
-		return []map[string]string{}, nil
-	}
-
-	// Default hardcoded list
-	return []map[string]string{
-		{"name": "Test Contact 1", "phoneNumber": "+11234567890"},      // Valid US
-		{"name": "Test Contact 2", "phoneNumber": "9876543210"},       // Assumed Indian, needs 91
-		{"name": "Test Contact 3", "phoneNumber": "invalid-number"},   // Invalid
-		{"name": "Test Contact 4", "phoneNumber": "+44-20-1234-5678"}, // Valid UK with hyphen
-		{"name": "Test Contact 5", "phoneNumber": "12345"},            // Too short
-		{"name": "Test Contact 6", "phoneNumber": ""},                  // Empty
-	}, nil
+// Structs for Google People API responses
+type GoogleContactGroup struct {
+	ResourceName  string `json:"resourceName"`
+	Name          string `json:"name"`
+	FormattedName string `json:"formattedName"`
+	MemberCount   int    `json:"memberCount"`
 }
 
-// AddContactGroupToMode handles adding contacts from a (simulated) Google Contact Group to a mode.
+type GoogleContactGroupListResponse struct {
+	ContactGroups []GoogleContactGroup `json:"contactGroups"`
+	NextPageToken string             `json:"nextPageToken"`
+}
+
+type GooglePersonName struct {
+	DisplayName string `json:"displayName"`
+}
+
+type GooglePhoneNumber struct {
+	Value         string `json:"value"`
+	CanonicalForm string `json:"canonicalForm"`
+}
+
+type GoogleContactGroupMembership struct {
+	ContactGroupResourceName string `json:"contactGroupResourceName"`
+}
+
+type GoogleMembership struct {
+	ContactGroupMembership GoogleContactGroupMembership `json:"contactGroupMembership"`
+}
+
+type GooglePerson struct {
+	ResourceName string              `json:"resourceName"`
+	Names        []GooglePersonName    `json:"names"`
+	PhoneNumbers []GooglePhoneNumber   `json:"phoneNumbers"`
+	Memberships  []GoogleMembership    `json:"memberships"`
+}
+
+type GoogleConnectionsListResponse struct {
+	Connections   []GooglePerson `json:"connections"`
+	NextPageToken string       `json:"nextPageToken"`
+	TotalItems    int          `json:"totalItems"`
+}
+
+// GoogleApiErrorDetail provides structure for the "error" field in Google API error responses.
+type GoogleApiErrorDetail struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+// GoogleApiError provides structure for Google API error responses.
+type GoogleApiError struct {
+	Error GoogleApiErrorDetail `json:"error"`
+}
+
+var fetchContactsFromGoogleGroupFunc = func(authToken string, groupName string, forUserLog string) ([]map[string]string, error) {
+	log.Info().Str("user_id", forUserLog).Str("groupName", groupName).Msg("Starting to fetch contacts from Google Group (REAL IMPLEMENTATION)")
+
+	httpClient := http.DefaultClient // Or a custom client if needed
+
+	// 1. Get Target Group Resource Name
+	var targetGroupResourceName string
+	var pageToken string
+	processedGroups := 0
+
+	log.Debug().Str("user_id", forUserLog).Msg("Fetching contact groups from Google People API")
+	for {
+		groupsURL := "https://people.googleapis.com/v1/contactGroups?pageSize=100" // Max pageSize is 1000, but 100 is fine for most cases
+		if pageToken != "" {
+			groupsURL += "&pageToken=" + pageToken
+		}
+
+		req, err := http.NewRequest("GET", groupsURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request for contact groups: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+authToken)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", forUserLog).Str("url", groupsURL).Msg("Failed HTTP request to fetch contact groups")
+			return nil, fmt.Errorf("failed to execute request for contact groups: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				log.Error().Err(readErr).Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Msg("Failed to read error response body from Google (contact groups)")
+				return nil, fmt.Errorf("error fetching contact groups, status: %s, failed to read error body", resp.Status)
+			}
+			var googleErr GoogleApiError
+			if json.Unmarshal(bodyBytes, &googleErr) == nil && googleErr.Error.Message != "" {
+				log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("google_error_status", googleErr.Error.Status).Str("google_error_message", googleErr.Error.Message).Msg("Google API error fetching contact groups")
+				return nil, fmt.Errorf("google API error fetching contact groups: %s (Status: %s)", googleErr.Error.Message, googleErr.Error.Status)
+			}
+			log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Non-OK HTTP status fetching contact groups from Google")
+			return nil, fmt.Errorf("error fetching contact groups, status: %s, body: %s", resp.Status, string(bodyBytes))
+		}
+
+		var groupListResp GoogleContactGroupListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&groupListResp); err != nil {
+			return nil, fmt.Errorf("failed to decode contact groups response: %w", err)
+		}
+
+		for _, group := range groupListResp.ContactGroups {
+			processedGroups++
+			if strings.EqualFold(group.Name, groupName) || strings.EqualFold(group.FormattedName, groupName) {
+				targetGroupResourceName = group.ResourceName
+				log.Info().Str("user_id", forUserLog).Str("groupName", groupName).Str("resourceName", targetGroupResourceName).Msg("Found target contact group")
+				break
+			}
+		}
+
+		if targetGroupResourceName != "" {
+			break // Found the group
+		}
+		pageToken = groupListResp.NextPageToken
+		if pageToken == "" {
+			break // No more pages
+		}
+	}
+	log.Debug().Str("user_id", forUserLog).Int("total_groups_checked", processedGroups).Msg("Finished checking contact groups")
+
+
+	if targetGroupResourceName == "" {
+		return nil, fmt.Errorf("contact group '%s' not found for user %s", groupName, forUserLog)
+	}
+
+	// 2. Get Contacts in the Target Group
+	var contactsResult []map[string]string
+	pageToken = "" // Reset for connections request
+	processedConnections := 0
+
+	log.Debug().Str("user_id", forUserLog).Str("groupResourceName", targetGroupResourceName).Msg("Fetching connections for the target group from Google People API")
+	for {
+		connectionsURL := "https://people.googleapis.com/v1/people/me/connections?personFields=names,phoneNumbers,memberships&pageSize=100" // Max pageSize 1000
+		if pageToken != "" {
+			connectionsURL += "&pageToken=" + pageToken
+		}
+		// No direct server-side filtering by contactGroupResourceName for people.me.connections
+		// We must fetch all connections and filter client-side by membership.
+
+		req, err := http.NewRequest("GET", connectionsURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request for connections: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+authToken)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", forUserLog).Str("url", connectionsURL).Msg("Failed HTTP request to fetch connections")
+			return nil, fmt.Errorf("failed to execute request for connections: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				log.Error().Err(readErr).Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Msg("Failed to read error response body from Google (connections)")
+				return nil, fmt.Errorf("error fetching connections, status: %s, failed to read error body", resp.Status)
+			}
+			var googleErr GoogleApiError
+			if json.Unmarshal(bodyBytes, &googleErr) == nil && googleErr.Error.Message != "" {
+				log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("google_error_status", googleErr.Error.Status).Str("google_error_message", googleErr.Error.Message).Msg("Google API error fetching connections")
+				return nil, fmt.Errorf("google API error fetching connections: %s (Status: %s)", googleErr.Error.Message, googleErr.Error.Status)
+			}
+			log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Non-OK HTTP status fetching connections from Google")
+			return nil, fmt.Errorf("error fetching connections, status: %s, body: %s", resp.Status, string(bodyBytes))
+		}
+
+		var connListResp GoogleConnectionsListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&connListResp); err != nil {
+			return nil, fmt.Errorf("failed to decode connections response: %w", err)
+		}
+
+		log.Debug().Str("user_id", forUserLog).Int("connections_in_page", len(connListResp.Connections)).Msg("Processing connections page")
+
+		for _, person := range connListResp.Connections {
+			processedConnections++
+			isMember := false
+			for _, membership := range person.Memberships {
+				if membership.ContactGroupMembership.ContactGroupResourceName == targetGroupResourceName {
+					isMember = true
+					break
+				}
+			}
+
+			if isMember {
+				var displayName string
+				if len(person.Names) > 0 {
+					displayName = person.Names[0].DisplayName
+				}
+
+				var phoneNumber string
+				if len(person.PhoneNumbers) > 0 {
+					// Prefer CanonicalForm if available, otherwise Value
+					if person.PhoneNumbers[0].CanonicalForm != "" {
+						phoneNumber = person.PhoneNumbers[0].CanonicalForm
+					} else {
+						phoneNumber = person.PhoneNumbers[0].Value
+					}
+				}
+
+				if strings.TrimSpace(phoneNumber) != "" {
+					contactsResult = append(contactsResult, map[string]string{"name": displayName, "phoneNumber": phoneNumber})
+					log.Debug().Str("user_id", forUserLog).Str("contactName", displayName).Str("phoneNumber", phoneNumber).Msg("Added contact from group")
+				} else {
+					log.Warn().Str("user_id", forUserLog).Str("contactName", displayName).Msg("Contact in group has no phone number, skipping.")
+				}
+			}
+		}
+
+		pageToken = connListResp.NextPageToken
+		if pageToken == "" {
+			break // No more pages
+		}
+	}
+	log.Info().Str("user_id", forUserLog).Int("total_connections_checked", processedConnections).Int("contacts_added_from_group", len(contactsResult)).Msg("Finished fetching and filtering connections")
+
+	return contactsResult, nil
+}
+
+// AddContactGroupToMode handles adding contacts from a Google Contact Group to a mode.
 func (s *server) AddContactGroupToMode() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
@@ -226,16 +420,25 @@ func (s *server) AddContactGroupToMode() http.HandlerFunc {
 			return
 		}
 
-		// 2. Fetch contacts (placeholder)
-		contacts, err := fetchContactsFromGoogleGroup(googleAuthToken.String, req.GroupName, txtid)
+		// 2. Fetch contacts
+		contacts, err := fetchContactsFromGoogleGroupFunc(googleAuthToken.String, req.GroupName, txtid)
 		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Failed to fetch contacts from Google Group placeholder")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contact group"))
+			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Error from fetchContactsFromGoogleGroup in AddContactGroupToMode")
+			if strings.Contains(err.Error(), "UNAUTHENTICATED") || strings.Contains(err.Error(), "PERMISSION_DENIED") {
+				s.Respond(w, r, http.StatusForbidden, errors.New("Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."))
+			} else if strings.Contains(err.Error(), "contact group '"+req.GroupName+"' not found") {
+				s.Respond(w, r, http.StatusNotFound, errors.New(fmt.Sprintf("Specified contact group '%s' not found.", req.GroupName)))
+			} else {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Error processing contacts from Google group."))
+			}
 			return
 		}
 
 		if len(contacts) == 0 {
-			s.Respond(w, r, http.StatusOK, errors.New(fmt.Sprintf("No contacts found or processed for group '%s'.", req.GroupName)))
+			// Respond with a success=true but a detail message, not an error object for Respond()
+			response := map[string]string{"detail": fmt.Sprintf("No contacts found or processed for group '%s'.", req.GroupName)}
+			responseJson, _ := json.Marshal(response)
+			s.Respond(w, r, http.StatusOK, string(responseJson))
 			return
 		}
 
@@ -355,16 +558,24 @@ func (s *server) DeleteContactGroupFromMode() http.HandlerFunc {
 			return
 		}
 
-		// 2. Fetch contacts (placeholder) - same function as Add
-		contacts, err := fetchContactsFromGoogleGroup(googleAuthToken.String, req.GroupName, txtid)
+		// 2. Fetch contacts - same function as Add
+		contacts, err := fetchContactsFromGoogleGroupFunc(googleAuthToken.String, req.GroupName, txtid)
 		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Failed to fetch contacts from Google Group placeholder for delete op")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contact group for deletion"))
+			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Error from fetchContactsFromGoogleGroup in DeleteContactGroupFromMode")
+			if strings.Contains(err.Error(), "UNAUTHENTICATED") || strings.Contains(err.Error(), "PERMISSION_DENIED") {
+				s.Respond(w, r, http.StatusForbidden, errors.New("Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."))
+			} else if strings.Contains(err.Error(), "contact group '"+req.GroupName+"' not found") {
+				s.Respond(w, r, http.StatusNotFound, errors.New(fmt.Sprintf("Specified contact group '%s' not found.", req.GroupName)))
+			} else {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("Error processing contacts from Google group for deletion."))
+			}
 			return
 		}
 
 		if len(contacts) == 0 {
-			s.Respond(w, r, http.StatusOK, errors.New(fmt.Sprintf("No contacts found in group '%s' to process for deletion.", req.GroupName)))
+			response := map[string]string{"detail": fmt.Sprintf("No contacts found in group '%s' to process for deletion.", req.GroupName)}
+			responseJson, _ := json.Marshal(response)
+			s.Respond(w, r, http.StatusOK, string(responseJson))
 			return
 		}
 

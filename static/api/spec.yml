@@ -8,6 +8,26 @@ info:
 schemes:
   - http
 
+tags:
+  - name: Admin
+    description: Operations for user administration
+  - name: Session
+    description: Manage WhatsApp connection sessions (connect, disconnect, status, QR)
+  - name: Webhook
+    description: Configure and manage webhooks for incoming messages and events
+  - name: User
+    description: User-related operations (info, check, presence, avatar, contacts)
+  - name: Chat
+    description: Operations for sending and managing messages (text, media, autoreply)
+  - name: Mode
+    description: Manage autoreply modes
+  - name: Autoreply Contacts
+    description: Manage autoreply settings using Google Contacts integration
+  - name: Group
+    description: Operations related to WhatsApp groups
+  - name: Newsletter
+    description: Operations related to WhatsApp newsletters
+
 paths:
   /admin/users:
     get:
