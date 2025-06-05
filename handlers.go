@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
+	"database/sql" // Kept for admin user struct
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
-	"io"
+	// "io" // Not needed by remaining functions
 	"net/http"
 	"net/url"
 	"os"
@@ -33,8 +33,7 @@ import (
 )
 
 // Struct definitions for Autoreply, Mode Autoreply, and Google Contacts integration
-// have been moved to autoreply_types.go.
-// Google API response struct definitions also moved to autoreply_types.go.
+// have been moved to autoreply_types.go or google_contacts_types.go.
 
 type Values struct {
 	m map[string]string
@@ -43,6 +42,10 @@ type Values struct {
 func (v Values) Get(key string) string {
 	return v.m[key]
 }
+
+// Autoreply, Mode, and Google Contacts handler functions and helpers are now in their respective files:
+// - autoreply_handlers.go (for simple autoreply and mode-based autoreply, and isValidModeName)
+// - google_contacts_integration.go (for Google Contacts related handlers and helpers: normalizePhoneNumber, fetchContactsFromGoogleGroupFunc)
 
 var messageTypes = []string{"Message", "ReadReceipt", "Presence", "HistorySync", "ChatPresence", "All"}
 
@@ -200,10 +203,6 @@ func (s *server) Connect() http.HandlerFunc {
 		}
 	}
 }
-
-// Autoreply, Mode, and Google Contacts handler functions and helpers are now in their respective files:
-// - autoreply_handlers.go (for simple autoreply and mode-based autoreply, and isValidModeName)
-// - google_contacts_integration.go (for Google Contacts related handlers and helpers: normalizePhoneNumber, fetchContactsFromGoogleGroupFunc)
 
 // Disconnects from Whatsapp websocket, does not log out device
 func (s *server) Disconnect() http.HandlerFunc {
@@ -3047,7 +3046,6 @@ func (s *server) UpdateGroupParticipants() http.HandlerFunc {
 	type updateGroupParticipantsStruct struct {
 		GroupJID string
 		Phone    []string
-		// Action string // add, remove, promote, demote
 		Action string
 	}
 
@@ -3078,7 +3076,6 @@ func (s *server) UpdateGroupParticipants() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-		// parse phone numbers
 		phoneParsed := make([]types.JID, len(t.Phone))
 		for i, phone := range t.Phone {
 			phoneParsed[i], ok = parseJID(phone)
@@ -3092,8 +3089,6 @@ func (s *server) UpdateGroupParticipants() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Action in Payload"))
 			return
 		}
-
-		// parse action
 
 		var action whatsmeow.ParticipantChange
 		switch t.Action {
@@ -3220,7 +3215,7 @@ func (s *server) SetGroupPhoto() http.HandlerFunc {
 
 		var filedata []byte
 
-		if t.Image[0:13] == "data:image/jp" {
+		if t.Image[0:13] == "data:image/jp" { // Should likely be data:image/jpeg or data:image/png
 			var dataURL, err = dataurl.DecodeString(t.Image)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode base64 encoded data from payload"))
@@ -3229,7 +3224,7 @@ func (s *server) SetGroupPhoto() http.HandlerFunc {
 				filedata = dataURL.Data
 			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Image data should start with \"data:image/jpeg;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Image data should start with \"data:image/jpeg;base64,\" or \"data:image/png;base64,\""))
 			return
 		}
 
@@ -3443,7 +3438,7 @@ func (s *server) SetGroupAnnounce() http.HandlerFunc {
 		var t setGroupAnnounceStruct
 		err := decoder.Decode(&t)
 		if err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
 			return
 		}
 
@@ -3538,22 +3533,10 @@ func (s *server) ListUsers() http.HandlerFunc {
 		var query string
 		var args []interface{}
 
-		/*
-			// Query the database to get the list of users
-			rows, err := s.db.Queryx("SELECT id, name, token, webhook, jid, qrcode, connected, expiration, events FROM users")
-			if err != nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Problem accessing DB"))
-				return
-			}
-			defer rows.Close()
-		*/
-
 		if hasID {
-			// Fetch a single user
 			query = "SELECT id, name, token, webhook, jid, qrcode, connected, expiration, proxy_url, events FROM users WHERE id = $1"
 			args = append(args, userID)
 		} else {
-			// Fetch all users
 			query = "SELECT id, name, token, webhook, jid, qrcode, connected, expiration, proxy_url, events FROM users"
 		}
 
@@ -3564,9 +3547,7 @@ func (s *server) ListUsers() http.HandlerFunc {
 		}
 		defer rows.Close()
 
-		// Create a slice to store the user data
 		users := []map[string]interface{}{}
-		// Iterate over the rows and populate the user data
 		for rows.Next() {
 			var user usersStruct
 			err := rows.StructScan(&user)
@@ -3583,7 +3564,6 @@ func (s *server) ListUsers() http.HandlerFunc {
 				isLoggedIn = clientManager.GetWhatsmeowClient(user.Id).IsLoggedIn()
 			}
 
-			//"connected":  user.Connected.Bool,
 			userMap := map[string]interface{}{
 				"id":         user.Id,
 				"name":       user.Name,
@@ -3599,13 +3579,11 @@ func (s *server) ListUsers() http.HandlerFunc {
 			}
 			users = append(users, userMap)
 		}
-		// Check for any error that occurred during iteration
 		if err := rows.Err(); err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Problem accessing DB"))
 			return
 		}
 
-		// Encode users slice into a JSON string
 		responseJson, err := json.Marshal(users)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, err)
@@ -3613,15 +3591,12 @@ func (s *server) ListUsers() http.HandlerFunc {
 		}
 
 		s.Respond(w, r, http.StatusOK, string(responseJson))
-
 	}
 }
 
 func (s *server) AddUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		// Parse the request body
 		var user struct {
 			Name       string `json:"name"`
 			Token      string `json:"token"`
@@ -3639,8 +3614,6 @@ func (s *server) AddUser() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Validate required fields
 		if user.Token == "" {
 			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
@@ -3649,7 +3622,6 @@ func (s *server) AddUser() http.HandlerFunc {
 			})
 			return
 		}
-
 		if user.Name == "" {
 			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
@@ -3659,8 +3631,6 @@ func (s *server) AddUser() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Set defaults
 		if user.Events == "" {
 			user.Events = "All"
 		}
@@ -3670,8 +3640,6 @@ func (s *server) AddUser() http.HandlerFunc {
 		if user.Webhook == "" {
 			user.Webhook = ""
 		}
-
-		// Check for existing user
 		var count int
 		if err := s.db.Get(&count, "SELECT COUNT(*) FROM users WHERE token = $1", user.Token); err != nil {
 			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -3689,8 +3657,6 @@ func (s *server) AddUser() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Validate events
 		eventList := strings.Split(user.Events, ",")
 		for _, event := range eventList {
 			event = strings.TrimSpace(event)
@@ -3704,8 +3670,6 @@ func (s *server) AddUser() http.HandlerFunc {
 				return
 			}
 		}
-
-		// Generate ID
 		id, err := GenerateRandomID()
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to generate random ID")
@@ -3716,8 +3680,6 @@ func (s *server) AddUser() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Insert user
 		if _, err = s.db.Exec(
 			"INSERT INTO users (id, name, token, webhook, expiration, events, jid, qrcode, proxy_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
 			id, user.Name, user.Token, user.Webhook, user.Expiration, user.Events, "", "", user.ProxyURL,
@@ -3730,8 +3692,6 @@ func (s *server) AddUser() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Success response
 		s.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 			"code": http.StatusCreated,
 			"data": map[string]interface{}{
@@ -3745,12 +3705,8 @@ func (s *server) AddUser() http.HandlerFunc {
 
 func (s *server) DeleteUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Get the user ID from the request URL
 		vars := mux.Vars(r)
 		userID := vars["id"]
-
-		// Delete the user from the database
 		result, err := s.db.Exec("DELETE FROM users WHERE id=$1", userID)
 		if err != nil {
 			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -3760,8 +3716,6 @@ func (s *server) DeleteUser() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Check if the user was deleted
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
 			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -3792,11 +3746,8 @@ func (s *server) DeleteUser() http.HandlerFunc {
 func (s *server) DeleteUserComplete() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
 		vars := mux.Vars(r)
 		id := vars["id"]
-
-		// Validate ID
 		if id == "" {
 			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
@@ -3805,8 +3756,6 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Check if user exists
 		var exists bool
 		err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", id).Scan(&exists)
 		if err != nil {
@@ -3827,16 +3776,11 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			})
 			return
 		}
-
-		// Get user info before deletion
 		var uname, jid, token string
 		err = s.db.QueryRow("SELECT name, jid, token FROM users WHERE id = $1", id).Scan(&uname, &jid, &token)
 		if err != nil {
 			log.Error().Err(err).Str("id", id).Msg("Problem retrieving user information")
-			// Continue anyway since we have the ID
 		}
-
-		// 1. Logout and disconnect instance
 		if client := clientManager.GetWhatsmeowClient(id); client != nil {
 			if client.IsConnected() {
 				log.Info().Str("id", id).Msg("Logging out user")
@@ -3845,8 +3789,6 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			log.Info().Str("id", id).Msg("Disconnecting from WhatsApp")
 			client.Disconnect()
 		}
-
-		// 2. Remove from DB
 		_, err = s.db.Exec("DELETE FROM users WHERE id = $1", id)
 		if err != nil {
 			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -3857,13 +3799,9 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			})
 			return
 		}
-
-		// 3. Cleanup from memory
 		clientManager.DeleteWhatsmeowClient(id)
 		clientManager.DeleteHTTPClient(id)
 		userinfocache.Delete(token)
-
-		// 4. Remove media files
 		userDirectory := filepath.Join(s.exPath, "files", id)
 		if stat, err := os.Stat(userDirectory); err == nil && stat.IsDir() {
 			log.Info().Str("dir", userDirectory).Msg("Deleting media and history files from disk")
@@ -3872,10 +3810,7 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 				log.Error().Err(err).Str("dir", userDirectory).Msg("Erro ao remover diretório de mídia")
 			}
 		}
-
 		log.Info().Str("id", id).Str("name", uname).Str("jid", jid).Msg("User deleted successfully")
-
-		// Success response
 		s.respondWithJSON(w, http.StatusOK, map[string]interface{}{
 			"code": http.StatusOK,
 			"data": map[string]interface{}{
@@ -3898,12 +3833,10 @@ func (s *server) Respond(w http.ResponseWriter, r *http.Request, status int, dat
 		dataenvelope["error"] = err.Error()
 		dataenvelope["success"] = false
 	} else {
-		// Try to unmarshal into a map first
 		var mydata map[string]interface{}
 		if err := json.Unmarshal([]byte(data.(string)), &mydata); err == nil {
 			dataenvelope["data"] = mydata
 		} else {
-			// If unmarshaling into a map fails, try as a slice
 			var mySlice []interface{}
 			if err := json.Unmarshal([]byte(data.(string)), &mySlice); err == nil {
 				dataenvelope["data"] = mySlice
@@ -3920,43 +3853,34 @@ func (s *server) Respond(w http.ResponseWriter, r *http.Request, status int, dat
 }
 
 func validateMessageFields(phone string, stanzaid *string, participant *string) (types.JID, error) {
-
 	recipient, ok := parseJID(phone)
 	if !ok {
 		return types.NewJID("", types.DefaultUserServer), errors.New("Could not parse Phone")
 	}
-
 	if stanzaid != nil {
 		if participant == nil {
 			return types.NewJID("", types.DefaultUserServer), errors.New("Missing Participant in ContextInfo")
 		}
 	}
-
 	if participant != nil {
 		if stanzaid == nil {
 			return types.NewJID("", types.DefaultUserServer), errors.New("Missing StanzaID in ContextInfo")
 		}
 	}
-
 	return recipient, nil
 }
 
 func (s *server) SetProxy() http.HandlerFunc {
 	type proxyStruct struct {
-		ProxyURL string `json:"proxy_url"` // Format: "socks5://user:pass@host:port" or "http://host:port"
-		Enable   bool   `json:"enable"`    // Whether to enable or disable proxy
+		ProxyURL string `json:"proxy_url"`
+		Enable   bool   `json:"enable"`
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		// Check if client exists and is connected
-
 		if clientManager.GetWhatsmeowClient(txtid) != nil && clientManager.GetWhatsmeowClient(txtid).IsConnected() {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("cannot set proxy while connected. Please disconnect first"))
 			return
 		}
-
 		decoder := json.NewDecoder(r.Body)
 		var t proxyStruct
 		err := decoder.Decode(&t)
@@ -3964,15 +3888,12 @@ func (s *server) SetProxy() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode payload"))
 			return
 		}
-
-		// If enable is false, remove proxy configuration
 		if !t.Enable {
 			_, err = s.db.Exec("UPDATE users SET proxy_url = NULL WHERE id = $1", txtid)
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New("failed to remove proxy configuration"))
 				return
 			}
-
 			response := map[string]interface{}{"Details": "Proxy disabled successfully"}
 			responseJson, err := json.Marshal(response)
 			if err != nil {
@@ -3982,32 +3903,24 @@ func (s *server) SetProxy() http.HandlerFunc {
 			}
 			return
 		}
-
-		// Validate proxy URL
 		if t.ProxyURL == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing proxy_url in payload"))
 			return
 		}
-
 		proxyURL, err := url.Parse(t.ProxyURL)
 		if err != nil {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid proxy URL format"))
 			return
 		}
-
-		// Only allow http and socks5 proxies
 		if proxyURL.Scheme != "http" && proxyURL.Scheme != "socks5" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("only HTTP and SOCKS5 proxies are supported"))
 			return
 		}
-
-		// Store proxy configuration in database
 		_, err = s.db.Exec("UPDATE users SET proxy_url = $1 WHERE id = $2", t.ProxyURL, txtid)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("failed to save proxy configuration"))
 			return
 		}
-
 		response := map[string]interface{}{
 			"Details":  "Proxy configured successfully",
 			"ProxyURL": t.ProxyURL,
@@ -4021,4 +3934,46 @@ func (s *server) SetProxy() http.HandlerFunc {
 	}
 }
 
-[end of handlers.go]
+// Helper function (not a handler)
+func updateUserInfo(v Values, key string, value string) Values {
+	v.m[key] = value
+	return v
+}
+
+// Helper function (not a handler)
+func parseJID(arg string) (types.JID, bool) {
+	if arg[0] == '+' {
+		arg = arg[1:]
+	}
+	if !strings.ContainsRune(arg, '@') {
+		return types.NewJID(arg, types.DefaultUserServer), true
+	}
+	recipient, err := types.ParseJID(arg)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to parse JID")
+		return recipient, false
+	} else if recipient.User == "" {
+		log.Warn().Msg("Recipient user is empty")
+		return recipient, false
+	}
+	return recipient, true
+}
+
+// Find takes a slice and looks for an element in it. If found it will
+// return it's key, otherwise it will return -1 and a bool of false.
+func Find(slice []string, val string) (int, bool) {
+	for i, item := range slice {
+		if item == val {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// respondWithJSON is a helper for admin routes to send JSON responses
+func (s *server) respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	response, _ := json.Marshal(payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(response)
+}
