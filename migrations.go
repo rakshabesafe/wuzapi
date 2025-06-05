@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jmoiron/sqlx"
+	log "github.com/rs/zerolog/log" // Added this line
 )
 
 type Migration struct {
