@@ -1674,26 +1674,6 @@ definitions:
         nullable: true
         description: "Name of the currently active mode. Null if no mode is active."
         example: "vacation"
-  AutoReplyEntry:
-    type: object
-    properties:
-      phone:
-        type: string
-        description: "The phone number for which the auto-reply is configured."
-        example: "1234567890"
-      body:
-        type: string
-        description: "The message body of the auto-reply."
-        example: "I'm currently unavailable. I'll get back to you soon."
-      last_sent_at:
-        type: string
-        format: date-time
-        description: "The timestamp when this auto-reply was last sent. Omitted if never sent or if the value is null."
-        example: "2023-10-27T10:30:00Z"
-        nullable: true
-    required:
-      - phone
-      - body
   User:
     type: object
     properties:
