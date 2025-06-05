@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
-	"io" // Added this line
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,64 +32,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type AutoReplyRequest struct {
-	Phone string `json:"Phone"`
-	Body  string `json:"Body"`
-}
-
-type AutoReplyEntry struct {
-	Phone      string     `json:"phone"`
-	Body       string     `json:"body"`
-	LastSentAt *time.Time `json:"last_sent_at,omitempty"` // Use a pointer to handle NULL values, omitempty to hide if NULL
-}
-
-type DeleteAutoReplyRequest struct {
-	Phone string `json:"Phone"`
-}
-
-// Structs for Mode Autoreply functionality
-type ModeAutoreplyRequest struct {
-	ModeName string `json:"ModeName"`
-	Phone    string `json:"Phone"`
-	Message  string `json:"Message"`
-}
-
-type ModeAutoreplyDeleteRequest struct {
-	ModeName string `json:"ModeName"`
-	Phone    string `json:"Phone,omitempty"` // Optional: if not provided, delete all for mode
-}
-
-type EnableModeRequest struct {
-	ModeName string `json:"ModeName"`
-}
-
-type DisableModeRequest struct {
-	ModeName string `json:"ModeName"`
-}
-
-type ModeAutoreplyEntry struct {
-	ModeName string `json:"ModeName"`
-	Phone    string `json:"Phone"`
-	Message  string `json:"Message"`
-}
-
-// AuthTokenRequest defines the structure for the /autoreply/contactgroupauth endpoint
-type AuthTokenRequest struct {
-	AuthToken string `json:"AuthToken"`
-}
-
-// ContactGroupRequest defines the structure for the /autoreply/contactgroup endpoint
-type ContactGroupRequest struct {
-	ModeName  string `json:"ModeName"`
-	GroupName string `json:"GroupName"`
-	Message   string `json:"Message"`
-}
-
-// ContactGroupDeleteRequest defines the structure for the DELETE /autoreply/contactgroup endpoint
-type ContactGroupDeleteRequest struct {
-	ModeName  string `json:"ModeName"`
-	GroupName string `json:"GroupName"`
-}
+// Struct definitions for Autoreply, Mode Autoreply, and Google Contacts integration
+// have been moved to autoreply_types.go.
+// Google API response struct definitions also moved to autoreply_types.go.
 
 type Values struct {
 	m map[string]string
@@ -97,553 +42,6 @@ type Values struct {
 
 func (v Values) Get(key string) string {
 	return v.m[key]
-}
-
-// normalizePhoneNumber attempts to clean and normalize a phone number string.
-// It removes non-numeric characters (except initial '+'), and for 10-digit numbers,
-// assumes it's an Indian number and prefixes "91".
-// Returns the normalized number (digits only) or an error.
-func normalizePhoneNumber(phone string) (string, error) {
-	// Keep initial '+' but remove other non-numeric characters
-	var cleaned strings.Builder
-	hasPlus := strings.HasPrefix(phone, "+")
-	if hasPlus {
-		phone = phone[1:] // Temporarily remove plus for cleaning
-	}
-
-	for _, r := range phone {
-		if r >= '0' && r <= '9' {
-			cleaned.WriteRune(r)
-		}
-	}
-	normalized := cleaned.String()
-
-	if normalized == "" {
-		return "", errors.New("phone number is empty after cleaning")
-	}
-
-	// If original had '+', it's likely an international number, keep as is (digits only)
-	// Otherwise, apply length-based rules (e.g., for Indian numbers)
-	if !hasPlus {
-		if len(normalized) == 10 {
-			// Assume 10-digit numbers without '+' are Indian, prefix with 91
-			// This is a common convention but might need adjustment for other regions/rules
-			return "91" + normalized, nil
-		}
-		// Add more rules here if needed, e.g., for other country-specific lengths without '+'
-	}
-
-	// Basic validation: check if it's all digits now and has a reasonable length
-	// This is a very basic check. Real-world validation is much more complex.
-	if len(normalized) < 7 || len(normalized) > 15 { // Arbitrary min/max lengths
-		return "", fmt.Errorf("phone number '%s' has invalid length after normalization", normalized)
-	}
-
-	return normalized, nil
-}
-
-
-// Structs for Google People API responses
-type GoogleContactGroup struct {
-	ResourceName  string `json:"resourceName"`
-	Name          string `json:"name"`
-	FormattedName string `json:"formattedName"`
-	MemberCount   int    `json:"memberCount"`
-}
-
-type GoogleContactGroupListResponse struct {
-	ContactGroups []GoogleContactGroup `json:"contactGroups"`
-	NextPageToken string             `json:"nextPageToken"`
-}
-
-type GooglePersonName struct {
-	DisplayName string `json:"displayName"`
-}
-
-type GooglePhoneNumber struct {
-	Value         string `json:"value"`
-	CanonicalForm string `json:"canonicalForm"`
-}
-
-type GoogleContactGroupMembership struct {
-	ContactGroupResourceName string `json:"contactGroupResourceName"`
-}
-
-type GoogleMembership struct {
-	ContactGroupMembership GoogleContactGroupMembership `json:"contactGroupMembership"`
-}
-
-type GooglePerson struct {
-	ResourceName string              `json:"resourceName"`
-	Names        []GooglePersonName    `json:"names"`
-	PhoneNumbers []GooglePhoneNumber   `json:"phoneNumbers"`
-	Memberships  []GoogleMembership    `json:"memberships"`
-}
-
-type GoogleConnectionsListResponse struct {
-	Connections   []GooglePerson `json:"connections"`
-	NextPageToken string       `json:"nextPageToken"`
-	TotalItems    int          `json:"totalItems"`
-}
-
-// GoogleApiErrorDetail provides structure for the "error" field in Google API error responses.
-type GoogleApiErrorDetail struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Status  string `json:"status"`
-}
-
-// GoogleApiError provides structure for Google API error responses.
-type GoogleApiError struct {
-	Error GoogleApiErrorDetail `json:"error"`
-}
-
-var fetchContactsFromGoogleGroupFunc = func(authToken string, groupName string, forUserLog string) ([]map[string]string, error) {
-	log.Info().Str("user_id", forUserLog).Str("groupName", groupName).Msg("Starting to fetch contacts from Google Group (REAL IMPLEMENTATION)")
-
-	httpClient := http.DefaultClient // Or a custom client if needed
-
-	// 1. Get Target Group Resource Name
-	var targetGroupResourceName string
-	var pageToken string
-	processedGroups := 0
-
-	log.Debug().Str("user_id", forUserLog).Msg("Fetching contact groups from Google People API")
-	for {
-		groupsURL := "https://people.googleapis.com/v1/contactGroups?pageSize=100" // Max pageSize is 1000, but 100 is fine for most cases
-		if pageToken != "" {
-			groupsURL += "&pageToken=" + pageToken
-		}
-
-		req, err := http.NewRequest("GET", groupsURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request for contact groups: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", forUserLog).Str("url", groupsURL).Msg("Failed HTTP request to fetch contact groups")
-			return nil, fmt.Errorf("failed to execute request for contact groups: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			bodyBytes, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				log.Error().Err(readErr).Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Msg("Failed to read error response body from Google (contact groups)")
-				return nil, fmt.Errorf("error fetching contact groups, status: %s, failed to read error body", resp.Status)
-			}
-			var googleErr GoogleApiError
-			if json.Unmarshal(bodyBytes, &googleErr) == nil && googleErr.Error.Message != "" {
-				log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("google_error_status", googleErr.Error.Status).Str("google_error_message", googleErr.Error.Message).Msg("Google API error fetching contact groups")
-				return nil, fmt.Errorf("google API error fetching contact groups: %s (Status: %s)", googleErr.Error.Message, googleErr.Error.Status)
-			}
-			log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Non-OK HTTP status fetching contact groups from Google")
-			return nil, fmt.Errorf("error fetching contact groups, status: %s, body: %s", resp.Status, string(bodyBytes))
-		}
-
-		var groupListResp GoogleContactGroupListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&groupListResp); err != nil {
-			return nil, fmt.Errorf("failed to decode contact groups response: %w", err)
-		}
-
-		for _, group := range groupListResp.ContactGroups {
-			processedGroups++
-			if strings.EqualFold(group.Name, groupName) || strings.EqualFold(group.FormattedName, groupName) {
-				targetGroupResourceName = group.ResourceName
-				log.Info().Str("user_id", forUserLog).Str("groupName", groupName).Str("resourceName", targetGroupResourceName).Msg("Found target contact group")
-				break
-			}
-		}
-
-		if targetGroupResourceName != "" {
-			break // Found the group
-		}
-		pageToken = groupListResp.NextPageToken
-		if pageToken == "" {
-			break // No more pages
-		}
-	}
-	log.Debug().Str("user_id", forUserLog).Int("total_groups_checked", processedGroups).Msg("Finished checking contact groups")
-
-
-	if targetGroupResourceName == "" {
-		return nil, fmt.Errorf("contact group '%s' not found for user %s", groupName, forUserLog)
-	}
-
-	// 2. Get Contacts in the Target Group
-	var contactsResult []map[string]string
-	pageToken = "" // Reset for connections request
-	processedConnections := 0
-
-	log.Debug().Str("user_id", forUserLog).Str("groupResourceName", targetGroupResourceName).Msg("Fetching connections for the target group from Google People API")
-	for {
-		connectionsURL := "https://people.googleapis.com/v1/people/me/connections?personFields=names,phoneNumbers,memberships&pageSize=100" // Max pageSize 1000
-		if pageToken != "" {
-			connectionsURL += "&pageToken=" + pageToken
-		}
-		// No direct server-side filtering by contactGroupResourceName for people.me.connections
-		// We must fetch all connections and filter client-side by membership.
-
-		req, err := http.NewRequest("GET", connectionsURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request for connections: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", forUserLog).Str("url", connectionsURL).Msg("Failed HTTP request to fetch connections")
-			return nil, fmt.Errorf("failed to execute request for connections: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			bodyBytes, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				log.Error().Err(readErr).Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Msg("Failed to read error response body from Google (connections)")
-				return nil, fmt.Errorf("error fetching connections, status: %s, failed to read error body", resp.Status)
-			}
-			var googleErr GoogleApiError
-			if json.Unmarshal(bodyBytes, &googleErr) == nil && googleErr.Error.Message != "" {
-				log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("google_error_status", googleErr.Error.Status).Str("google_error_message", googleErr.Error.Message).Msg("Google API error fetching connections")
-				return nil, fmt.Errorf("google API error fetching connections: %s (Status: %s)", googleErr.Error.Message, googleErr.Error.Status)
-			}
-			log.Error().Str("user_id", forUserLog).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Non-OK HTTP status fetching connections from Google")
-			return nil, fmt.Errorf("error fetching connections, status: %s, body: %s", resp.Status, string(bodyBytes))
-		}
-
-		var connListResp GoogleConnectionsListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&connListResp); err != nil {
-			return nil, fmt.Errorf("failed to decode connections response: %w", err)
-		}
-
-		log.Debug().Str("user_id", forUserLog).Int("connections_in_page", len(connListResp.Connections)).Msg("Processing connections page")
-
-		for _, person := range connListResp.Connections {
-			processedConnections++
-			isMember := false
-			for _, membership := range person.Memberships {
-				if membership.ContactGroupMembership.ContactGroupResourceName == targetGroupResourceName {
-					isMember = true
-					break
-				}
-			}
-
-			if isMember {
-				var displayName string
-				if len(person.Names) > 0 {
-					displayName = person.Names[0].DisplayName
-				}
-
-				var phoneNumber string
-				if len(person.PhoneNumbers) > 0 {
-					// Prefer CanonicalForm if available, otherwise Value
-					if person.PhoneNumbers[0].CanonicalForm != "" {
-						phoneNumber = person.PhoneNumbers[0].CanonicalForm
-					} else {
-						phoneNumber = person.PhoneNumbers[0].Value
-					}
-				}
-
-				if strings.TrimSpace(phoneNumber) != "" {
-					contactsResult = append(contactsResult, map[string]string{"name": displayName, "phoneNumber": phoneNumber})
-					log.Debug().Str("user_id", forUserLog).Str("contactName", displayName).Str("phoneNumber", phoneNumber).Msg("Added contact from group")
-				} else {
-					log.Warn().Str("user_id", forUserLog).Str("contactName", displayName).Msg("Contact in group has no phone number, skipping.")
-				}
-			}
-		}
-
-		pageToken = connListResp.NextPageToken
-		if pageToken == "" {
-			break // No more pages
-		}
-	}
-	log.Info().Str("user_id", forUserLog).Int("total_connections_checked", processedConnections).Int("contacts_added_from_group", len(contactsResult)).Msg("Finished fetching and filtering connections")
-
-	return contactsResult, nil
-}
-
-// AddContactGroupToMode handles adding contacts from a Google Contact Group to a mode.
-func (s *server) AddContactGroupToMode() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req ContactGroupRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		if strings.TrimSpace(req.ModeName) == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing ModeName in Payload"))
-			return
-		}
-		if strings.TrimSpace(req.GroupName) == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing GroupName in Payload"))
-			return
-		}
-		if strings.TrimSpace(req.Message) == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Message in Payload"))
-			return
-		}
-
-		modeName := strings.ToLower(req.ModeName)
-		if !isValidModeName(modeName) {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
-			return
-		}
-
-		// 1. Retrieve Auth Token
-		var googleAuthToken sql.NullString
-		tokenQuery := "SELECT google_contacts_auth_token FROM users WHERE id = $1"
-		if s.db.DriverName() == "sqlite" {
-			tokenQuery = "SELECT google_contacts_auth_token FROM users WHERE id = ?"
-		}
-		err := s.db.Get(&googleAuthToken, tokenQuery, txtid)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				log.Error().Str("user_id", txtid).Msg("User not found when trying to fetch Google Auth Token")
-				s.Respond(w, r, http.StatusNotFound, errors.New("User not found"))
-				return
-			}
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to fetch google_contacts_auth_token")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve auth token information"))
-			return
-		}
-
-		if !googleAuthToken.Valid || googleAuthToken.String == "" {
-			s.Respond(w, r, http.StatusForbidden, errors.New("Google Contacts API token not configured. Please use /autoreply/contactgroupauth."))
-			return
-		}
-
-		// 2. Fetch contacts
-		contacts, err := fetchContactsFromGoogleGroupFunc(googleAuthToken.String, req.GroupName, txtid)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Error from fetchContactsFromGoogleGroup in AddContactGroupToMode")
-			if strings.Contains(err.Error(), "UNAUTHENTICATED") || strings.Contains(err.Error(), "PERMISSION_DENIED") {
-				s.Respond(w, r, http.StatusForbidden, errors.New("Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."))
-			} else if strings.Contains(err.Error(), "contact group '"+req.GroupName+"' not found") {
-				s.Respond(w, r, http.StatusNotFound, errors.New(fmt.Sprintf("Specified contact group '%s' not found.", req.GroupName)))
-			} else {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Error processing contacts from Google group."))
-			}
-			return
-		}
-
-		if len(contacts) == 0 {
-			// Respond with a success=true but a detail message, not an error object for Respond()
-			response := map[string]string{"detail": fmt.Sprintf("No contacts found or processed for group '%s'.", req.GroupName)}
-			responseJson, _ := json.Marshal(response)
-			s.Respond(w, r, http.StatusOK, string(responseJson))
-			return
-		}
-
-		// 3. Process contacts and add to autoreply_modes
-		var upsertQuery string
-		dbType := s.db.DriverName()
-		if dbType == "postgres" {
-			upsertQuery = `INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message)
-                           VALUES ($1, $2, $3, $4)
-                           ON CONFLICT (user_id, mode_name, phone_number)
-                           DO UPDATE SET message = EXCLUDED.message;`
-		} else { // sqlite
-			upsertQuery = `INSERT OR REPLACE INTO autoreply_modes (user_id, mode_name, phone_number, message)
-                           VALUES (?, ?, ?, ?);`
-		}
-
-		var processedCount, skippedCount int
-		tx, err := s.db.Beginx()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for AddContactGroupToMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts"))
-			return
-		}
-		defer tx.Rollback() // Rollback if not committed
-
-		stmt, err := tx.Preparex(upsertQuery)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to prepare statement for inserting mode autoreplies")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts"))
-			return
-		}
-		defer stmt.Close()
-
-		for _, contact := range contacts {
-			phoneNumber, ok := contact["phoneNumber"]
-			if !ok || strings.TrimSpace(phoneNumber) == "" {
-				log.Warn().Str("user_id", txtid).Str("contact_name", contact["name"]).Msg("Skipping contact due to missing or empty phone number")
-				skippedCount++
-				continue
-			}
-
-			normalizedPhone, normErr := normalizePhoneNumber(phoneNumber)
-			if normErr != nil {
-				log.Warn().Err(normErr).Str("user_id", txtid).Str("original_phone", phoneNumber).Str("contact_name", contact["name"]).Msg("Skipping contact due to phone normalization error")
-				skippedCount++
-				continue
-			}
-
-			if _, err := stmt.Exec(txtid, modeName, normalizedPhone, req.Message); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Str("normalized_phone", normalizedPhone).Msg("Failed to upsert contact into autoreply_modes")
-				// Decide if one failure should stop all, for now, we'll skip and count
-				skippedCount++
-				continue
-			}
-			processedCount++
-		}
-
-		if err := tx.Commit(); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for AddContactGroupToMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to save contact group data"))
-			return
-		}
-
-		detailMsg := fmt.Sprintf("%d contacts processed and added/updated for mode '%s'. %d contacts skipped.", processedCount, modeName, skippedCount)
-		response := map[string]string{"detail": detailMsg}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// DeleteContactGroupFromMode handles deleting contacts from a (simulated) Google Contact Group from a mode.
-func (s *server) DeleteContactGroupFromMode() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req ContactGroupDeleteRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		if strings.TrimSpace(req.ModeName) == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing ModeName in Payload"))
-			return
-		}
-		if strings.TrimSpace(req.GroupName) == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing GroupName in Payload"))
-			return
-		}
-
-		modeName := strings.ToLower(req.ModeName)
-		if !isValidModeName(modeName) {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
-			return
-		}
-
-		// 1. Retrieve Auth Token
-		var googleAuthToken sql.NullString
-		tokenQuery := "SELECT google_contacts_auth_token FROM users WHERE id = $1"
-		if s.db.DriverName() == "sqlite" {
-			tokenQuery = "SELECT google_contacts_auth_token FROM users WHERE id = ?"
-		}
-		err := s.db.Get(&googleAuthToken, tokenQuery, txtid)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				log.Error().Str("user_id", txtid).Msg("User not found when trying to fetch Google Auth Token for delete op")
-				s.Respond(w, r, http.StatusNotFound, errors.New("User not found"))
-				return
-			}
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to fetch google_contacts_auth_token for delete op")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve auth token information"))
-			return
-		}
-
-		if !googleAuthToken.Valid || googleAuthToken.String == "" {
-			s.Respond(w, r, http.StatusForbidden, errors.New("Google Contacts API token not configured. Please use /autoreply/contactgroupauth."))
-			return
-		}
-
-		// 2. Fetch contacts - same function as Add
-		contacts, err := fetchContactsFromGoogleGroupFunc(googleAuthToken.String, req.GroupName, txtid)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Error from fetchContactsFromGoogleGroup in DeleteContactGroupFromMode")
-			if strings.Contains(err.Error(), "UNAUTHENTICATED") || strings.Contains(err.Error(), "PERMISSION_DENIED") {
-				s.Respond(w, r, http.StatusForbidden, errors.New("Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."))
-			} else if strings.Contains(err.Error(), "contact group '"+req.GroupName+"' not found") {
-				s.Respond(w, r, http.StatusNotFound, errors.New(fmt.Sprintf("Specified contact group '%s' not found.", req.GroupName)))
-			} else {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Error processing contacts from Google group for deletion."))
-			}
-			return
-		}
-
-		if len(contacts) == 0 {
-			response := map[string]string{"detail": fmt.Sprintf("No contacts found in group '%s' to process for deletion.", req.GroupName)}
-			responseJson, _ := json.Marshal(response)
-			s.Respond(w, r, http.StatusOK, string(responseJson))
-			return
-		}
-
-		// 3. Process contacts for deletion from autoreply_modes
-		deleteQuery := "DELETE FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2 AND phone_number = $3"
-		if s.db.DriverName() == "sqlite" {
-			deleteQuery = "DELETE FROM autoreply_modes WHERE user_id = ? AND mode_name = ? AND phone_number = ?"
-		}
-
-		var processedCount, skippedCount, actuallyDeletedCount int
-
-		tx, err := s.db.Beginx()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for DeleteContactGroupFromMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts for deletion"))
-			return
-		}
-		defer tx.Rollback()
-
-		stmt, err := tx.Preparex(deleteQuery)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to prepare statement for deleting mode autoreplies")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts for deletion"))
-			return
-		}
-		defer stmt.Close()
-
-		for _, contact := range contacts {
-			phoneNumber, ok := contact["phoneNumber"]
-			if !ok || strings.TrimSpace(phoneNumber) == "" {
-				log.Warn().Str("user_id", txtid).Str("contact_name", contact["name"]).Msg("Skipping contact for deletion due to missing or empty phone number")
-				skippedCount++
-				continue
-			}
-
-			normalizedPhone, normErr := normalizePhoneNumber(phoneNumber)
-			if normErr != nil {
-				log.Warn().Err(normErr).Str("user_id", txtid).Str("original_phone", phoneNumber).Str("contact_name", contact["name"]).Msg("Skipping contact for deletion due to phone normalization error")
-				skippedCount++
-				continue
-			}
-
-			result, err := stmt.Exec(txtid, modeName, normalizedPhone)
-			if err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Str("normalized_phone", normalizedPhone).Msg("Failed to delete contact from autoreply_modes")
-				// Decide if one failure should stop all, for now, we'll skip and count
-				skippedCount++
-				continue
-			}
-			processedCount++
-			rowsAffected, _ := result.RowsAffected()
-			if rowsAffected > 0 {
-				actuallyDeletedCount++
-			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for DeleteContactGroupFromMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to save changes for contact group deletion"))
-			return
-		}
-
-		detailMsg := fmt.Sprintf("%d contacts from group '%s' processed for deletion from mode '%s'. %d entries actually deleted. %d contacts skipped.", processedCount, req.GroupName, modeName, actuallyDeletedCount, skippedCount)
-		response := map[string]string{"detail": detailMsg}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
 }
 
 var messageTypes = []string{"Message", "ReadReceipt", "Presence", "HistorySync", "ChatPresence", "All"}
@@ -671,7 +69,6 @@ func (s *server) authalice(next http.Handler) http.Handler {
 		proxy_url := ""
 		qrcode := ""
 
-		// Get token from headers or uri parameters
 		token := r.Header.Get("token")
 		if token == "" {
 			token = strings.Join(r.URL.Query()["token"], "")
@@ -680,7 +77,6 @@ func (s *server) authalice(next http.Handler) http.Handler {
 		myuserinfo, found := userinfocache.Get(token)
 		if !found {
 			log.Info().Msg("Looking for user information in DB")
-			// Checks DB from matching user and store user values in context
 			rows, err := s.db.Query("SELECT id,name,webhook,jid,events,proxy_url,qrcode FROM users WHERE token=$1 LIMIT 1", token)
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, err)
@@ -724,21 +120,18 @@ func (s *server) authalice(next http.Handler) http.Handler {
 
 // Connects to Whatsapp Servers
 func (s *server) Connect() http.HandlerFunc {
-
 	type connectStruct struct {
 		Subscribe []string
 		Immediate bool
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		webhook := r.Context().Value("userinfo").(Values).Get("Webhook")
 		jid := r.Context().Value("userinfo").(Values).Get("Jid")
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		token := r.Context().Value("userinfo").(Values).Get("Token")
 		eventstring := ""
 
-		// Decodes request BODY looking for events to subscribe
 		decoder := json.NewDecoder(r.Body)
 		var t connectStruct
 		err := decoder.Decode(&t)
@@ -751,7 +144,6 @@ func (s *server) Connect() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Already Connected"))
 			return
 		} else {
-
 			var subscribedEvents []string
 			if len(t.Subscribe) < 1 {
 				if !Find(subscribedEvents, "All") {
@@ -809,696 +201,9 @@ func (s *server) Connect() http.HandlerFunc {
 	}
 }
 
-// SetGoogleContactsAuthToken handles storing the Google Contacts API authentication token for a user.
-func (s *server) SetGoogleContactsAuthToken() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req AuthTokenRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		if strings.TrimSpace(req.AuthToken) == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing AuthToken in Payload"))
-			return
-		}
-
-		query := "UPDATE users SET google_contacts_auth_token = $1 WHERE id = $2"
-		if s.db.DriverName() == "sqlite" {
-			query = "UPDATE users SET google_contacts_auth_token = ? WHERE id = ?"
-		}
-
-		result, err := s.db.Exec(query, req.AuthToken, txtid)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to update google_contacts_auth_token")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to store auth token"))
-			return
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to check affected rows for google_contacts_auth_token update")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to confirm token storage"))
-			return
-		}
-		if rowsAffected == 0 {
-			// This case should ideally not happen if txtid is always valid from middleware,
-			// but good to be aware of. It means the user ID didn't match any row.
-			log.Warn().Str("user_id", txtid).Msg("No user found to update google_contacts_auth_token, though middleware should ensure user exists")
-			s.Respond(w, r, http.StatusNotFound, errors.New("User not found to store token"))
-			return
-		}
-
-		response := map[string]string{"detail": "Auth token stored successfully"}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// AddAutoReply handles adding a new auto-reply entry for a user.
-func (s *server) AddAutoReply() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req AutoReplyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		if req.Phone == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
-			return
-		}
-		if req.Body == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Body in Payload"))
-			return
-		}
-
-		newId, err := GenerateRandomID() // Assuming GenerateRandomID is accessible from migrations.go
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to generate random ID for auto-reply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to create auto-reply entry"))
-			return
-		}
-
-		// Set last_sent_at to NULL (or zero-value for time.Time which translates to NULL for nullable timestamp)
-		_, err = s.db.Exec("INSERT INTO autoreplies (id, user_id, phone_number, reply_body, last_sent_at) VALUES ($1, $2, $3, $4, $5)", newId, txtid, req.Phone, req.Body, nil)
-		if err != nil {
-			// Check for unique constraint violation (specific error code might depend on DB: PostgreSQL uses "23505")
-			// This is a simplified check; a more robust way involves checking pq.Error.Code or sqlite3.ErrConstraintUnique
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
-				s.Respond(w, r, http.StatusConflict, errors.New("Auto-reply for this phone number already exists for the user"))
-				return
-			}
-			log.Error().Err(err).Str("user_id", txtid).Str("phone", req.Phone).Msg("Failed to add auto-reply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to add auto-reply"))
-			return
-		}
-
-		response := map[string]string{"detail": "Auto-reply added successfully", "id": newId}
-		responseJson, err := json.Marshal(response)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to marshal success response for AddAutoReply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to create auto-reply entry"))
-			return
-		}
-		s.Respond(w, r, http.StatusCreated, string(responseJson))
-	}
-}
-
-// GetAutoReplies handles fetching all auto-reply entries for a user.
-func (s *server) GetAutoReplies() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		rows, err := s.db.Query("SELECT phone_number, reply_body, last_sent_at FROM autoreplies WHERE user_id = $1", txtid)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to query auto-replies")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve auto-replies"))
-			return
-		}
-		defer rows.Close()
-
-		var replies []AutoReplyEntry
-		for rows.Next() {
-			var entry AutoReplyEntry
-			var lastSentAt sql.NullTime // Use sql.NullTime to scan nullable timestamp
-			if err := rows.Scan(&entry.Phone, &entry.Body, &lastSentAt); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to scan auto-reply row")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process auto-reply data"))
-				return
-			}
-			if lastSentAt.Valid {
-				entry.LastSentAt = &lastSentAt.Time // Convert to *time.Time if valid
-			} else {
-				entry.LastSentAt = nil
-			}
-			replies = append(replies, entry)
-		}
-
-		if err = rows.Err(); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Error iterating auto-reply rows")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to read auto-replies"))
-			return
-		}
-
-		responseJson, err := json.Marshal(replies)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to marshal auto-replies response")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to format auto-replies response"))
-			return
-		}
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// DeleteAutoReply handles deleting an auto-reply entry for a user.
-func (s *server) DeleteAutoReply() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req DeleteAutoReplyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		if req.Phone == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
-			return
-		}
-
-		result, err := s.db.Exec("DELETE FROM autoreplies WHERE user_id = $1 AND phone_number = $2", txtid, req.Phone)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("phone", req.Phone).Msg("Failed to delete auto-reply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to delete auto-reply"))
-			return
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("phone", req.Phone).Msg("Failed to check affected rows after delete")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to confirm deletion status"))
-			return
-		}
-
-		if rowsAffected == 0 {
-			s.Respond(w, r, http.StatusNotFound, errors.New("Auto-reply not found for this user and phone number"))
-			return
-		}
-
-		response := map[string]string{"detail": "Auto-reply deleted successfully"}
-		responseJson, err := json.Marshal(response)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to marshal success response for DeleteAutoReply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process deletion confirmation")) // Should ideally not happen
-			return
-		}
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// isValidModeName checks if the mode name is purely alphanumeric.
-func isValidModeName(modeName string) bool {
-	if modeName == "" {
-		return false
-	}
-	// Regex for alphanumeric only
-	// For a more robust solution, consider using a proper regex library if more complex rules are needed.
-	// This basic check iterates through runes.
-	for _, r := range modeName {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return false
-		}
-	}
-	return true
-}
-
-// AddModeAutoreply handles adding or updating an autoreply message for a specific mode.
-func (s *server) AddModeAutoreply() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req ModeAutoreplyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		modeName := strings.ToLower(req.ModeName)
-		if !isValidModeName(modeName) {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
-			return
-		}
-
-		if req.Phone == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
-			return
-		}
-		if req.Message == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Message in Payload"))
-			return
-		}
-
-		var query string
-		dbType := s.db.DriverName()
-		if dbType == "postgres" {
-			query = `INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (user_id, mode_name, phone_number)
-                     DO UPDATE SET message = EXCLUDED.message;`
-		} else { // sqlite
-			query = `INSERT OR REPLACE INTO autoreply_modes (user_id, mode_name, phone_number, message)
-                     VALUES (?, ?, ?, ?);`
-		}
-
-		_, err := s.db.Exec(query, txtid, modeName, req.Phone, req.Message)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to add/update mode autoreply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to save mode autoreply"))
-			return
-		}
-
-		response := map[string]string{"detail": "Mode autoreply added/updated successfully"}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusCreated, string(responseJson))
-	}
-}
-
-// DeleteModeAutoreply handles deleting autoreply messages for a specific mode.
-func (s *server) DeleteModeAutoreply() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req ModeAutoreplyDeleteRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		modeName := strings.ToLower(req.ModeName)
-		if !isValidModeName(modeName) {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
-			return
-		}
-
-		var result sql.Result
-		var err error
-
-		if req.Phone != "" {
-			query := "DELETE FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2 AND phone_number = $3"
-			if s.db.DriverName() == "sqlite" {
-				query = "DELETE FROM autoreply_modes WHERE user_id = ? AND mode_name = ? AND phone_number = ?"
-			}
-			result, err = s.db.Exec(query, txtid, modeName, req.Phone)
-		} else {
-			query := "DELETE FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2"
-			if s.db.DriverName() == "sqlite" {
-				query = "DELETE FROM autoreply_modes WHERE user_id = ? AND mode_name = ?"
-			}
-			result, err = s.db.Exec(query, txtid, modeName)
-		}
-
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to delete mode autoreply")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to delete mode autoreply"))
-			return
-		}
-
-		rowsAffected, _ := result.RowsAffected()
-		detailMsg := fmt.Sprintf("%d autoreply entry(s) deleted for mode '%s'", rowsAffected, modeName)
-		if rowsAffected == 0 {
-			detailMsg = fmt.Sprintf("No autoreply entries found or deleted for mode '%s'", modeName)
-		}
-
-		response := map[string]string{"detail": detailMsg}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// GetModeAutoreplies handles fetching autoreply messages, optionally filtered by mode.
-func (s *server) GetModeAutoreplies() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-		modeNameParam := r.URL.Query().Get("modeName")
-
-		var rows *sql.Rows
-		var err error
-
-		if modeNameParam != "" {
-			modeName := strings.ToLower(modeNameParam)
-			if !isValidModeName(modeName) {
-				s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid modeName parameter: must be alphanumeric"))
-				return
-			}
-			query := "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2"
-			if s.db.DriverName() == "sqlite" {
-				query = "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = ? AND mode_name = ?"
-			}
-			rows, err = s.db.Query(query, txtid, modeName)
-		} else {
-			query := "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = $1"
-			if s.db.DriverName() == "sqlite" {
-				query = "SELECT mode_name, phone_number, message FROM autoreply_modes WHERE user_id = ?"
-			}
-			rows, err = s.db.Query(query, txtid)
-		}
-
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to query mode autoreplies")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve mode autoreplies"))
-			return
-		}
-		defer rows.Close()
-
-		var entries []ModeAutoreplyEntry
-		for rows.Next() {
-			var entry ModeAutoreplyEntry
-			if err := rows.Scan(&entry.ModeName, &entry.Phone, &entry.Message); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to scan mode autoreply row")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process mode autoreply data"))
-				return
-			}
-			entries = append(entries, entry)
-		}
-
-		if err = rows.Err(); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Error iterating mode autoreply rows")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to read mode autoreplies"))
-			return
-		}
-
-		responseJson, _ := json.Marshal(entries)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// EnableMode activates a specific autoreply mode for the user.
-func (s *server) EnableMode() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req EnableModeRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		modeName := strings.ToLower(req.ModeName)
-		if !isValidModeName(modeName) {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
-			return
-		}
-
-		dbType := s.db.DriverName()
-
-		// Start transaction
-		tx, err := s.db.Beginx()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for EnableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode"))
-			return
-		}
-		defer tx.Rollback() // Rollback if not committed
-
-		// 1. Clear current autoreply list for the user
-		clearAutorepliesQuery := "DELETE FROM autoreplies WHERE user_id = $1"
-		if dbType == "sqlite" {
-			clearAutorepliesQuery = "DELETE FROM autoreplies WHERE user_id = ?"
-		}
-		if _, err := tx.Exec(clearAutorepliesQuery, txtid); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to clear autoreplies for EnableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (clear old)"))
-			return
-		}
-
-		// 2. Fetch new numbers and messages for the mode
-		type modeEntry struct {
-			PhoneNumber string `db:"phone_number"`
-			Message     string `db:"message"`
-		}
-		var entriesToActivate []modeEntry
-		fetchModeEntriesQuery := "SELECT phone_number, message FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2"
-		if dbType == "sqlite" {
-			fetchModeEntriesQuery = "SELECT phone_number, message FROM autoreply_modes WHERE user_id = ? AND mode_name = ?"
-		}
-		err = tx.Select(&entriesToActivate, fetchModeEntriesQuery, txtid, modeName)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to fetch mode entries for EnableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (fetch new)"))
-			return
-		}
-
-		if len(entriesToActivate) == 0 {
-             log.Warn().Str("user_id", txtid).Str("mode_name", modeName).Msg("EnableMode called for a mode with no entries or mode does not exist")
-        }
-
-
-		// 3. Populate autoreply list
-		insertAutoreplyQuery := "INSERT INTO autoreplies (id, user_id, phone_number, reply_body, last_sent_at) VALUES ($1, $2, $3, $4, NULL)"
-		if dbType == "sqlite" {
-			insertAutoreplyQuery = "INSERT INTO autoreplies (id, user_id, phone_number, reply_body, last_sent_at) VALUES (?, ?, ?, ?, NULL)"
-		}
-		stmt, err := tx.Preparex(insertAutoreplyQuery)
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to prepare statement for inserting autoreplies")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (prepare insert)"))
-			return
-		}
-		defer stmt.Close()
-
-		for _, entry := range entriesToActivate {
-			newId, idErr := GenerateRandomID()
-			if idErr != nil {
-				log.Error().Err(idErr).Msg("Failed to generate random ID for autoreply entry in EnableMode")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (generate id)"))
-				return
-			}
-			if _, err := stmt.Exec(newId, txtid, entry.PhoneNumber, entry.Message); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to insert autoreply entry in EnableMode")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (insert new)"))
-				return
-			}
-		}
-
-		// 4. Update active mode
-		var updateActiveModeQuery string
-		if dbType == "postgres" {
-			updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES ($1, $2)
-                                 ON CONFLICT(user_id) DO UPDATE SET current_mode_name = EXCLUDED.current_mode_name;`
-		} else { // sqlite
-			updateActiveModeQuery = `INSERT OR REPLACE INTO active_mode (user_id, current_mode_name) VALUES (?, ?);`
-		}
-		if _, err := tx.Exec(updateActiveModeQuery, txtid, modeName); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Str("mode_name", modeName).Msg("Failed to update active_mode for EnableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (update active)"))
-			return
-		}
-
-		// Commit transaction
-		if err := tx.Commit(); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for EnableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (commit)"))
-			return
-		}
-
-		detailMsg := fmt.Sprintf("Mode '%s' enabled successfully. %d autoreplies activated.", modeName, len(entriesToActivate))
-		response := map[string]string{"detail": detailMsg}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// DisableMode deactivates a specific autoreply mode if it's currently active.
-func (s *server) DisableMode() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		var req DisableModeRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
-			return
-		}
-
-		modeName := strings.ToLower(req.ModeName)
-		if !isValidModeName(modeName) {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
-			return
-		}
-
-		dbType := s.db.DriverName()
-
-		// Start transaction
-		tx, err := s.db.Beginx()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for DisableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode"))
-			return
-		}
-		defer tx.Rollback()
-
-		// Check if it's the active mode
-		var currentActiveMode sql.NullString
-		getActiveModeQuery := "SELECT current_mode_name FROM active_mode WHERE user_id = $1"
-		if dbType == "sqlite" {
-			getActiveModeQuery = "SELECT current_mode_name FROM active_mode WHERE user_id = ?"
-		}
-		err = tx.Get(&currentActiveMode, getActiveModeQuery, txtid)
-		if err != nil && err != sql.ErrNoRows {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to query active_mode for DisableMode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (check active)"))
-			return
-		}
-
-		if currentActiveMode.Valid && currentActiveMode.String == modeName {
-			// Clear autoreplies
-			clearAutorepliesQuery := "DELETE FROM autoreplies WHERE user_id = $1"
-			if dbType == "sqlite" {
-				clearAutorepliesQuery = "DELETE FROM autoreplies WHERE user_id = ?"
-			}
-			if _, err := tx.Exec(clearAutorepliesQuery, txtid); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to clear autoreplies for DisableMode")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (clear replies)"))
-				return
-			}
-
-			// Update active_mode to NULL
-			updateActiveModeQuery := "UPDATE active_mode SET current_mode_name = NULL WHERE user_id = $1"
-			if dbType == "sqlite" {
-				updateActiveModeQuery = "UPDATE active_mode SET current_mode_name = NULL WHERE user_id = ?"
-			}
-			if _, err := tx.Exec(updateActiveModeQuery, txtid); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to set active_mode to NULL for DisableMode")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (set null)"))
-				return
-			}
-
-			// Commit transaction
-			if err := tx.Commit(); err != nil {
-				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for DisableMode")
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (commit)"))
-				return
-			}
-			response := map[string]string{"detail": fmt.Sprintf("Mode '%s' disabled successfully.", modeName)}
-			responseJson, _ := json.Marshal(response)
-			s.Respond(w, r, http.StatusOK, string(responseJson))
-		} else {
-			// Mode was not active, or no mode was active. Still a success from client perspective.
-			// No need to commit as no changes were made in this path.
-			response := map[string]string{"detail": fmt.Sprintf("Mode '%s' was not active or does not exist. No changes made.", modeName)}
-			responseJson, _ := json.Marshal(response)
-			s.Respond(w, r, http.StatusOK, string(responseJson))
-		}
-	}
-}
-
-// GetCurrentMode retrieves the currently active autoreply mode for the user.
-func (s *server) GetCurrentMode() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-
-		dbType := s.db.DriverName()
-
-		var currentMode sql.NullString
-		query := "SELECT current_mode_name FROM active_mode WHERE user_id = $1"
-		if dbType == "sqlite" {
-			query = "SELECT current_mode_name FROM active_mode WHERE user_id = ?"
-		}
-		err := s.db.Get(&currentMode, query, txtid)
-
-		if err != nil && err != sql.ErrNoRows {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to get current mode")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve current mode"))
-			return
-		}
-
-		var modeNameStr string
-		if currentMode.Valid {
-			modeNameStr = currentMode.String
-		} else {
-			modeNameStr = "" // Or null, depending on desired JSON output for no active mode
-		}
-
-		response := map[string]interface{}{"current_mode_name": modeNameStr}
-		if !currentMode.Valid {
-             response = map[string]interface{}{"current_mode_name": nil}
-        }
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
-// ClearModes deactivates any active mode and clears all autoreplies for the user.
-func (s *server) ClearModes() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-		dbType := s.db.DriverName()
-
-		tx, err := s.db.Beginx()
-		if err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for ClearModes")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes"))
-			return
-		}
-		defer tx.Rollback()
-
-		// Clear autoreplies
-		clearAutorepliesQuery := "DELETE FROM autoreplies WHERE user_id = $1"
-		if dbType == "sqlite" {
-			clearAutorepliesQuery = "DELETE FROM autoreplies WHERE user_id = ?"
-		}
-		if _, err := tx.Exec(clearAutorepliesQuery, txtid); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to clear autoreplies for ClearModes")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (clear replies)"))
-			return
-		}
-
-		// Update active_mode to NULL
-		// Ensure row exists for user before updating, or use INSERT ON CONFLICT for active_mode as well
-		var updateActiveModeQuery string
-		if dbType == "postgres" {
-			updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES ($1, NULL)
-                                 ON CONFLICT(user_id) DO UPDATE SET current_mode_name = NULL;`
-		} else { // sqlite
-			// Check if user exists in active_mode, if not, insert. Otherwise, update.
-			// This is safer than just UPDATE if a user might not have an entry yet.
-			updateActiveModeQuery = `INSERT OR REPLACE INTO active_mode (user_id, current_mode_name)
-                                     VALUES (?, (SELECT current_mode_name FROM active_mode WHERE user_id = ?));` // Keep existing if any, then set to NULL
-            // Simpler: Just ensure it's NULL. If the row doesn't exist, this is fine. If it does, it sets to NULL.
-            // However, to ensure the row exists for future GetCurrentMode calls to not return ErrNoRows (unless that's desired),
-            // an UPSERT type logic is better.
-            updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES (?, NULL)
-                                     ON CONFLICT(user_id) DO UPDATE SET current_mode_name = NULL;` // For SQLite 3.24+
-            // For older SQLite, might need:
-            // _, err = tx.Exec("UPDATE active_mode SET current_mode_name = NULL WHERE user_id = ?", txtid)
-            // if err == nil { /* check rows affected, if 0 then insert */ }
-            // For simplicity and matching PostgreSQL, using the ON CONFLICT approach for SQLite too, assuming modern version.
-		}
-        // Corrected SQLite strategy for ClearModes:
-        // Ensure a row for the user exists in active_mode and set its current_mode_name to NULL.
-        if dbType == "sqlite" {
-             // First, try to update. If no rows are affected, it means the user might not have an entry.
-            res, err_update := tx.Exec("UPDATE active_mode SET current_mode_name = NULL WHERE user_id = ?", txtid)
-            if err_update != nil {
-                log.Error().Err(err_update).Str("user_id", txtid).Msg("Failed to update active_mode to NULL for ClearModes (SQLite)")
-                s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (set null)"))
-                return
-            }
-            rowsAffected, _ := res.RowsAffected()
-            if rowsAffected == 0 {
-                // No existing row, so insert one with NULL mode_name.
-                _, err_insert := tx.Exec("INSERT INTO active_mode (user_id, current_mode_name) VALUES (?, NULL)", txtid)
-                if err_insert != nil {
-                    log.Error().Err(err_insert).Str("user_id", txtid).Msg("Failed to insert into active_mode for ClearModes (SQLite)")
-                    s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (insert null)"))
-                    return
-                }
-            }
-        } else { // PostgreSQL
-            if _, err := tx.Exec(updateActiveModeQuery, txtid); err != nil {
-                log.Error().Err(err).Str("user_id", txtid).Msg("Failed to set active_mode to NULL for ClearModes (Postgres)")
-                s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (set null)"))
-                return
-            }
-        }
-
-
-		if err := tx.Commit(); err != nil {
-			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for ClearModes")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to clear modes (commit)"))
-			return
-		}
-
-		response := map[string]string{"detail": "All modes cleared and current mode deactivated successfully."}
-		responseJson, _ := json.Marshal(response)
-		s.Respond(w, r, http.StatusOK, string(responseJson))
-	}
-}
-
+// Autoreply, Mode, and Google Contacts handler functions and helpers are now in their respective files:
+// - autoreply_handlers.go (for simple autoreply and mode-based autoreply, and isValidModeName)
+// - google_contacts_integration.go (for Google Contacts related handlers and helpers: normalizePhoneNumber, fetchContactsFromGoogleGroupFunc)
 
 // Disconnects from Whatsapp websocket, does not log out device
 func (s *server) Disconnect() http.HandlerFunc {
@@ -1513,7 +218,6 @@ func (s *server) Disconnect() http.HandlerFunc {
 			return
 		}
 		if clientManager.GetWhatsmeowClient(txtid).IsConnected() == true {
-			//if clientManager.GetWhatsmeowClient(txtid).IsLoggedIn() == true {
 			log.Info().Str("jid", jid).Msg("Disconnection successfull")
 			_, err := s.db.Exec("UPDATE users SET connected=0,events=$1 WHERE id=$2", "", txtid)
 			if err != nil {
@@ -1526,7 +230,7 @@ func (s *server) Disconnect() http.HandlerFunc {
 			response := map[string]interface{}{"Details": "Disconnected"}
 			responseJson, err := json.Marshal(response)
 
-			clientManager.DeleteWhatsmeowClient(txtid) // mameluco
+			clientManager.DeleteWhatsmeowClient(txtid)
 			killchannel[txtid] <- true
 
 			if err != nil {
@@ -1535,11 +239,6 @@ func (s *server) Disconnect() http.HandlerFunc {
 				s.Respond(w, r, http.StatusOK, string(responseJson))
 			}
 			return
-			//} else {
-			//	log.Warn().Str("jid", jid).Msg("Ignoring disconnect as it was not connected")
-			//	s.Respond(w, r, http.StatusInternalServerError, errors.New("Cannot disconnect because it is not logged in"))
-			//	return
-			//}
 		} else {
 			log.Warn().Str("jid", jid).Msg("Ignoring disconnect as it was not connected")
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Cannot disconnect because it is not logged in"))
@@ -1594,14 +293,12 @@ func (s *server) DeleteWebhook() http.HandlerFunc {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		token := r.Context().Value("userinfo").(Values).Get("Token")
 
-		// Update the database to remove the webhook and clear events
 		_, err := s.db.Exec("UPDATE users SET webhook='', events='' WHERE id=$1", txtid)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Could not delete webhook: %v", err)))
 			return
 		}
 
-		// Update the user info cache
 		v := updateUserInfo(r.Context().Value("userinfo"), "Webhook", "")
 		v = updateUserInfo(v, "Events", "")
 		userinfocache.Set(token, v, cache.NoExpiration)
@@ -1659,7 +356,6 @@ func (s *server) UpdateWebhook() http.HandlerFunc {
 		if len(t.Events) > 0 {
 			_, err = s.db.Exec("UPDATE users SET webhook=$1, events=$2 WHERE id=$3", webhook, eventstring, txtid)
 		} else {
-			// Update only webhook
 			_, err = s.db.Exec("UPDATE users SET webhook=$1 WHERE id=$2", webhook, txtid)
 		}
 
@@ -1701,8 +397,6 @@ func (s *server) SetWebhook() http.HandlerFunc {
 		}
 
 		webhook := t.WebhookURL
-
-		// If events are provided, validate them
 		var eventstring string
 		if len(t.Events) > 0 {
 			var validEvents []string
@@ -1717,11 +411,8 @@ func (s *server) SetWebhook() http.HandlerFunc {
 			if eventstring == "," || eventstring == "" {
 				eventstring = "All"
 			}
-
-			// Update both webhook and events
 			_, err = s.db.Exec("UPDATE users SET webhook=$1, events=$2 WHERE id=$3", webhook, eventstring, txtid)
 		} else {
-			// Update only webhook
 			_, err = s.db.Exec("UPDATE users SET webhook=$1 WHERE id=$2", webhook, txtid)
 		}
 
@@ -1747,7 +438,6 @@ func (s *server) SetWebhook() http.HandlerFunc {
 // Gets QR code encoded in Base64
 func (s *server) GetQR() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		code := ""
 
@@ -1798,7 +488,6 @@ func (s *server) GetQR() http.HandlerFunc {
 // Logs out device from Whatsapp (requires to scan QR next time)
 func (s *server) Logout() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		jid := r.Context().Value("userinfo").(Values).Get("Jid")
 
@@ -1844,13 +533,10 @@ func (s *server) Logout() http.HandlerFunc {
 
 // Pair by Phone. Retrieves the code to pair by phone number instead of QR
 func (s *server) PairPhone() http.HandlerFunc {
-
 	type pairStruct struct {
 		Phone string
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -1898,12 +584,8 @@ func (s *server) PairPhone() http.HandlerFunc {
 
 // Gets Connected and LoggedIn Status
 func (s *server) GetStatus() http.HandlerFunc {
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		userInfo := r.Context().Value("userinfo").(Values)
-
-		// Log all userinfo values
 		log.Info().
 			Str("Id", userInfo.Get("Id")).
 			Str("Jid", userInfo.Get("Jid")).
@@ -1915,15 +597,7 @@ func (s *server) GetStatus() http.HandlerFunc {
 			Msg("User info values")
 
 		log.Info().Str("Name", userInfo.Get("Name")).Msg("User name")
-
 		txtid := userInfo.Get("Id")
-
-		/*
-			if clientManager.GetWhatsmeowClient(txtid) == nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("No session"))
-				return
-			}
-		*/
 
 		isConnected := clientManager.GetWhatsmeowClient(txtid).IsConnected()
 		isLoggedIn := clientManager.GetWhatsmeowClient(txtid).IsLoggedIn()
@@ -1952,7 +626,6 @@ func (s *server) GetStatus() http.HandlerFunc {
 
 // Sends a document/attachment message
 func (s *server) SendDocument() http.HandlerFunc {
-
 	type documentStruct struct {
 		Caption     string
 		Phone       string
@@ -1962,9 +635,7 @@ func (s *server) SendDocument() http.HandlerFunc {
 		MimeType    string
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		msgid := ""
 		var resp whatsmeow.SendResponse
@@ -1982,38 +653,31 @@ func (s *server) SendDocument() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Document == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Document in Payload"))
 			return
 		}
-
 		if t.FileName == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing FileName in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
-
 		if t.Document[0:29] == "data:application/octet-stream" {
 			var dataURL, err = dataurl.DecodeString(t.Document)
 			if err != nil {
@@ -2031,7 +695,6 @@ func (s *server) SendDocument() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Document data should start with \"data:application/octet-stream;base64,\""))
 			return
 		}
-
 		msg := &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
 			URL:        proto.String(uploaded.URL),
 			FileName:   &t.FileName,
@@ -2048,7 +711,6 @@ func (s *server) SendDocument() http.HandlerFunc {
 			FileLength:    proto.Uint64(uint64(len(filedata))),
 			Caption:       proto.String(t.Caption),
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -2062,13 +724,11 @@ func (s *server) SendDocument() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2083,7 +743,6 @@ func (s *server) SendDocument() http.HandlerFunc {
 
 // Sends an audio message
 func (s *server) SendAudio() http.HandlerFunc {
-
 	type audioStruct struct {
 		Phone       string
 		Audio       string
@@ -2091,9 +750,7 @@ func (s *server) SendAudio() http.HandlerFunc {
 		Id          string
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		msgid := ""
 		var resp whatsmeow.SendResponse
@@ -2110,33 +767,27 @@ func (s *server) SendAudio() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Audio == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Audio in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
-
 		if t.Audio[0:14] == "data:audio/ogg" {
 			var dataURL, err = dataurl.DecodeString(t.Audio)
 			if err != nil {
@@ -2154,22 +805,18 @@ func (s *server) SendAudio() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Audio data should start with \"data:audio/ogg;base64,\""))
 			return
 		}
-
 		ptt := true
 		mime := "audio/ogg; codecs=opus"
-
 		msg := &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
 			URL:        proto.String(uploaded.URL),
 			DirectPath: proto.String(uploaded.DirectPath),
 			MediaKey:   uploaded.MediaKey,
-			//Mimetype:      proto.String(http.DetectContentType(filedata)),
 			Mimetype:      &mime,
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
 			FileLength:    proto.Uint64(uint64(len(filedata))),
 			PTT:           &ptt,
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -2183,13 +830,11 @@ func (s *server) SendAudio() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2204,7 +849,6 @@ func (s *server) SendAudio() http.HandlerFunc {
 
 // Sends an Image message
 func (s *server) SendImage() http.HandlerFunc {
-
 	type imageStruct struct {
 		Phone       string
 		Image       string
@@ -2213,9 +857,7 @@ func (s *server) SendImage() http.HandlerFunc {
 		MimeType    string
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		msgid := ""
 		var resp whatsmeow.SendResponse
@@ -2232,34 +874,28 @@ func (s *server) SendImage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Image == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Image in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 		var thumbnailBytes []byte
-
 		if t.Image[0:10] == "data:image" {
 			var dataURL, err = dataurl.DecodeString(t.Image)
 			if err != nil {
@@ -2273,42 +909,32 @@ func (s *server) SendImage() http.HandlerFunc {
 					return
 				}
 			}
-
-			// decode jpeg into image.Image
 			reader := bytes.NewReader(filedata)
 			img, _, err := image.Decode(reader)
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Could not decode image for thumbnail preparation: %v", err)))
 				return
 			}
-
-			// resize to width 72 using Lanczos resampling and preserve aspect ratio
 			m := resize.Thumbnail(72, 72, img, resize.Lanczos3)
-
 			tmpFile, err := os.CreateTemp("", "resized-*.jpg")
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Could not create temp file for thumbnail: %v", err)))
 				return
 			}
 			defer tmpFile.Close()
-
-			// write new image to file
 			if err := jpeg.Encode(tmpFile, m, nil); err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to encode jpeg: %v", err)))
 				return
 			}
-
 			thumbnailBytes, err = os.ReadFile(tmpFile.Name())
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read %s: %v", tmpFile.Name(), err)))
 				return
 			}
-
 		} else {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Image data should start with \"data:image/png;base64,\""))
 			return
 		}
-
 		msg := &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
 			Caption:    proto.String(t.Caption),
 			URL:        proto.String(uploaded.URL),
@@ -2325,7 +951,6 @@ func (s *server) SendImage() http.HandlerFunc {
 			FileLength:    proto.Uint64(uint64(len(filedata))),
 			JPEGThumbnail: thumbnailBytes,
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			if msg.ImageMessage.ContextInfo == nil {
 				msg.ImageMessage.ContextInfo = &waE2E.ContextInfo{
@@ -2335,17 +960,14 @@ func (s *server) SendImage() http.HandlerFunc {
 				}
 			}
 		}
-
 		if t.ContextInfo.MentionedJID != nil {
 			msg.ImageMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2360,7 +982,6 @@ func (s *server) SendImage() http.HandlerFunc {
 
 // Sends Sticker message
 func (s *server) SendSticker() http.HandlerFunc {
-
 	type stickerStruct struct {
 		Phone        string
 		Sticker      string
@@ -2369,9 +990,7 @@ func (s *server) SendSticker() http.HandlerFunc {
 		MimeType     string
 		ContextInfo  waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		msgid := ""
 		var resp whatsmeow.SendResponse
@@ -2388,33 +1007,27 @@ func (s *server) SendSticker() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Sticker == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Sticker in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
-
 		if t.Sticker[0:4] == "data" {
 			var dataURL, err = dataurl.DecodeString(t.Sticker)
 			if err != nil {
@@ -2432,7 +1045,6 @@ func (s *server) SendSticker() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Data should start with \"data:mime/type;base64,\""))
 			return
 		}
-
 		msg := &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
 			URL:        proto.String(uploaded.URL),
 			DirectPath: proto.String(uploaded.DirectPath),
@@ -2448,7 +1060,6 @@ func (s *server) SendSticker() http.HandlerFunc {
 			FileLength:    proto.Uint64(uint64(len(filedata))),
 			PngThumbnail:  t.PngThumbnail,
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -2462,13 +1073,11 @@ func (s *server) SendSticker() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2483,7 +1092,6 @@ func (s *server) SendSticker() http.HandlerFunc {
 
 // Sends Video message
 func (s *server) SendVideo() http.HandlerFunc {
-
 	type imageStruct struct {
 		Phone         string
 		Video         string
@@ -2493,9 +1101,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 		MimeType      string
 		ContextInfo   waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		msgid := ""
 		var resp whatsmeow.SendResponse
@@ -2512,33 +1118,27 @@ func (s *server) SendVideo() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Video == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Video in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
-
 		if t.Video[0:4] == "data" {
 			var dataURL, err = dataurl.DecodeString(t.Video)
 			if err != nil {
@@ -2556,7 +1156,6 @@ func (s *server) SendVideo() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Data should start with \"data:mime/type;base64,\""))
 			return
 		}
-
 		msg := &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
 			Caption:    proto.String(t.Caption),
 			URL:        proto.String(uploaded.URL),
@@ -2573,7 +1172,6 @@ func (s *server) SendVideo() http.HandlerFunc {
 			FileLength:    proto.Uint64(uint64(len(filedata))),
 			JPEGThumbnail: t.JPEGThumbnail,
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -2587,13 +1185,11 @@ func (s *server) SendVideo() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2608,7 +1204,6 @@ func (s *server) SendVideo() http.HandlerFunc {
 
 // Sends Contact
 func (s *server) SendContact() http.HandlerFunc {
-
 	type contactStruct struct {
 		Phone       string
 		Id          string
@@ -2616,9 +1211,7 @@ func (s *server) SendContact() http.HandlerFunc {
 		Vcard       string
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -2648,25 +1241,21 @@ func (s *server) SendContact() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Vcard in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		msg := &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
 			DisplayName: &t.Name,
 			Vcard:       &t.Vcard,
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -2680,13 +1269,11 @@ func (s *server) SendContact() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2701,7 +1288,6 @@ func (s *server) SendContact() http.HandlerFunc {
 
 // Sends location
 func (s *server) SendLocation() http.HandlerFunc {
-
 	type locationStruct struct {
 		Phone       string
 		Id          string
@@ -2710,9 +1296,7 @@ func (s *server) SendLocation() http.HandlerFunc {
 		Longitude   float64
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -2742,26 +1326,22 @@ func (s *server) SendLocation() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Longitude in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		msg := &waE2E.Message{LocationMessage: &waE2E.LocationMessage{
 			DegreesLatitude:  &t.Latitude,
 			DegreesLongitude: &t.Longitude,
 			Name:             &t.Name,
 		}}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -2775,13 +1355,11 @@ func (s *server) SendLocation() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2797,7 +1375,6 @@ func (s *server) SendLocation() http.HandlerFunc {
 // Sends Buttons (not implemented, does not work)
 
 func (s *server) SendButtons() http.HandlerFunc {
-
 	type buttonStruct struct {
 		ButtonId   string
 		ButtonText string
@@ -2808,9 +1385,7 @@ func (s *server) SendButtons() http.HandlerFunc {
 		Buttons []buttonStruct
 		Id      string
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -2828,17 +1403,14 @@ func (s *server) SendButtons() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Title == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Title in Payload"))
 			return
 		}
-
 		if len(t.Buttons) < 1 {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Buttons in Payload"))
 			return
@@ -2847,21 +1419,17 @@ func (s *server) SendButtons() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("buttons cant more than 3"))
 			return
 		}
-
 		recipient, ok := parseJID(t.Phone)
 		if !ok {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not parse Phone"))
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var buttons []*waE2E.ButtonsMessage_Button
-
 		for _, item := range t.Buttons {
 			buttons = append(buttons, &waE2E.ButtonsMessage_Button{
 				ButtonID:       proto.String(item.ButtonId),
@@ -2870,13 +1438,11 @@ func (s *server) SendButtons() http.HandlerFunc {
 				NativeFlowInfo: &waE2E.ButtonsMessage_Button_NativeFlowInfo{},
 			})
 		}
-
 		msg2 := &waE2E.ButtonsMessage{
 			ContentText: proto.String(t.Title),
 			HeaderType:  waE2E.ButtonsMessage_EMPTY.Enum(),
 			Buttons:     buttons,
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, &waE2E.Message{ViewOnceMessage: &waE2E.FutureProofMessage{
 			Message: &waE2E.Message{
 				ButtonsMessage: msg2,
@@ -2886,7 +1452,6 @@ func (s *server) SendButtons() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -2902,18 +1467,15 @@ func (s *server) SendButtons() http.HandlerFunc {
 // SendList
 // https://github.com/tulir/whatsmeow/issues/305
 func (s *server) SendList() http.HandlerFunc {
-
 	type rowsStruct struct {
 		RowId       string
 		Title       string
 		Description string
 	}
-
 	type sectionsStruct struct {
 		Title string
 		Rows  []rowsStruct
 	}
-
 	type listStruct struct {
 		Phone       string
 		Title       string
@@ -2923,9 +1485,7 @@ func (s *server) SendList() http.HandlerFunc {
 		Sections    []sectionsStruct
 		Id          string
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -2946,27 +1506,22 @@ func (s *server) SendList() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Phone in Payload"))
 			return
 		}
-
 		if t.Title == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Title in Payload"))
 			return
 		}
-
 		if t.Description == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Description in Payload"))
 			return
 		}
-
 		if t.ButtonText == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing ButtonText in Payload"))
 			return
 		}
-
 		if len(t.Sections) < 1 {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Sections in Payload"))
 			return
@@ -2976,15 +1531,12 @@ func (s *server) SendList() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not parse Phone"))
 			return
 		}
-
 		if t.Id == "" {
 			msgid = whatsmeow.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		var sections []*waE2E.ListMessage_Section
-
 		for _, item := range t.Sections {
 			var rows []*waE2E.ListMessage_Row
 			id := 1
@@ -3001,7 +1553,6 @@ func (s *server) SendList() http.HandlerFunc {
 					Description: proto.String(row.Description),
 				})
 			}
-
 			sections = append(sections, &waE2E.ListMessage_Section{
 				Title: proto.String(item.Title),
 				Rows:  rows,
@@ -3015,7 +1566,6 @@ func (s *server) SendList() http.HandlerFunc {
 			Sections:    sections,
 			FooterText:  proto.String(t.FooterText),
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, &waE2E.Message{
 			ViewOnceMessage: &waE2E.FutureProofMessage{
 				Message: &waE2E.Message{
@@ -3026,7 +1576,6 @@ func (s *server) SendList() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -3041,16 +1590,13 @@ func (s *server) SendList() http.HandlerFunc {
 
 // Sends a regular text message
 func (s *server) SendMessage() http.HandlerFunc {
-
 	type textStruct struct {
 		Phone       string
 		Body        string
 		Id          string
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -3068,36 +1614,30 @@ func (s *server) SendMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Body == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Body in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
-
 		msg := &waE2E.Message{
 			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 				Text: &t.Body,
 			},
 		}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -3111,13 +1651,11 @@ func (s *server) SendMessage() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -3126,19 +1664,17 @@ func (s *server) SendMessage() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-
 		return
 	}
 }
 
 func (s *server) SendPoll() http.HandlerFunc {
 	type pollRequest struct {
-		Group   string   `json:"group"`   // The recipient's group id (120363313346913103@g.us)
-		Header  string   `json:"header"`  // The poll's headline text
-		Options []string `json:"options"` // The list of poll options
+		Group   string   `json:"group"`
+		Header  string   `json:"header"`
+		Options []string `json:"options"`
 		Id      string
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
@@ -3157,43 +1693,35 @@ func (s *server) SendPoll() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
 			return
 		}
-
 		if req.Group == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Grouop in payload"))
 			return
 		}
-
 		if req.Header == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Header in payload"))
 			return
 		}
-
 		if len(req.Options) < 2 {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("At least 2 options are required"))
 			return
 		}
-
 		if req.Id == "" {
 			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
 		} else {
 			msgid = req.Id
 		}
-
 		recipient, err := validateMessageFields(req.Group, nil, nil)
 		if err != nil {
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		pollMessage := clientManager.GetWhatsmeowClient(txtid).BuildPollCreation(req.Header, req.Options, 1)
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, pollMessage, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to send poll: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Poll sent")
-
 		response := map[string]interface{}{"Details": "Poll sent successfully", "Id": msgid}
 		responseJson, err := json.Marshal(response)
 		if err != nil {
@@ -3206,14 +1734,11 @@ func (s *server) SendPoll() http.HandlerFunc {
 
 // Delete message
 func (s *server) DeleteMessage() http.HandlerFunc {
-
 	type textStruct struct {
 		Phone string
 		Id    string
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -3231,31 +1756,25 @@ func (s *server) DeleteMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Id == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Id in Payload"))
 			return
 		}
-
 		msgid = t.Id
-
 		recipient, ok := parseJID(t.Phone)
 		if !ok {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not parse Phone"))
 			return
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, clientManager.GetWhatsmeowClient(txtid).BuildRevoke(recipient, types.EmptyJID, msgid))
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message deleted")
 		response := map[string]interface{}{"Details": "Deleted", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -3264,23 +1783,19 @@ func (s *server) DeleteMessage() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-
 		return
 	}
 }
 
 // Sends a edit text message
 func (s *server) SendEditMessage() http.HandlerFunc {
-
 	type editStruct struct {
 		Phone       string
 		Body        string
 		Id          string
 		ContextInfo waE2E.ContextInfo
 	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
 		if clientManager.GetWhatsmeowClient(txtid) == nil {
@@ -3298,37 +1813,31 @@ func (s *server) SendEditMessage() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
 			return
 		}
-
 		if t.Phone == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Phone in Payload"))
 			return
 		}
-
 		if t.Body == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Body in Payload"))
 			return
 		}
-
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
 			log.Error().Msg(fmt.Sprintf("%s", err))
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
-
 		if t.Id == "" {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Id in Payload"))
 			return
 		} else {
 			msgid = t.Id
 		}
-
 		msg := &waE2E.Message{
 			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 				Text: &t.Body,
 			},
 		}
-
 		if t.ContextInfo.StanzaID != nil {
 			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(*t.ContextInfo.StanzaID),
@@ -3342,13 +1851,11 @@ func (s *server) SendEditMessage() http.HandlerFunc {
 			}
 			msg.ExtendedTextMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
-
 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, clientManager.GetWhatsmeowClient(txtid).BuildEdit(recipient, msgid, msg))
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending edit message: %v", err)))
 			return
 		}
-
 		log.Info().Str("timestamp", fmt.Sprintf("%d", resp.Timestamp)).Str("id", msgid).Msg("Message edit sent")
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp, "Id": msgid}
 		responseJson, err := json.Marshal(response)
@@ -3357,7 +1864,6 @@ func (s *server) SendEditMessage() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-
 		return
 	}
 }
@@ -5514,3 +4020,5 @@ func (s *server) SetProxy() http.HandlerFunc {
 		}
 	}
 }
+
+[end of handlers.go]
