@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io" // Added this line
 	"net/http"
 	"net/url"
 	"os"
