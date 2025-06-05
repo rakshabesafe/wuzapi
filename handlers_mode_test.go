@@ -1063,6 +1063,10 @@ func TestAddContactGroupToMode(t *testing.T) {
 	// Pre-set auth token for testUserID1
 	setGoogleTokenForUser(t, testUserID1, "valid-google-token")
 
+	// Store original fetch function to restore after tests
+	originalFetchContactsFunc := fetchContactsFromGoogleGroupFunc
+	defer func() { fetchContactsFromGoogleGroupFunc = originalFetchContactsFunc }()
+
 	tests := []struct {
 		name            string
 		userID          string
@@ -1153,13 +1157,84 @@ func TestAddContactGroupToMode(t *testing.T) {
 			userID:    testUserID1,
 			userToken: testUserToken1,
 			payload:   ContactGroupRequest{ModeName: "EmptyTest", GroupName: "emptygroup", Message: "No one here"},
-			expectedStatus: http.StatusOK, // The handler returns 200 with a specific error message in the body for an empty contact list
-			expectedBodyRegex: `"error":"No contacts found or processed for group 'emptygroup'."`,
+			expectedStatus: http.StatusOK,
+			expectedBodyRegex: `No contacts found or processed for group 'emptygroup'.`, // Adjusted to expect detail, not error
+		},
+		{
+			name:      "Google API returns UNAUTHENTICATED error",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "AuthTest", GroupName: "auth_error_group", Message: "Test"},
+			expectedStatus: http.StatusForbidden,
+			expectedBodyRegex: `"error":"Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."`,
+		},
+		{
+			name:      "Google API returns PERMISSION_DENIED error",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "PermTest", GroupName: "perm_denied_group", Message: "Test"},
+			expectedStatus: http.StatusForbidden,
+			expectedBodyRegex: `"error":"Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."`,
+		},
+		{
+			name:      "Google API returns group not found error",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "NotFoundTest", GroupName: "non_existent_google_group", Message: "Test"},
+			expectedStatus: http.StatusNotFound,
+			expectedBodyRegex: `"error":"Specified contact group 'non_existent_google_group' not found."`,
+		},
+		{
+			name:      "Google API returns generic error",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupRequest{ModeName: "GenericErrorTest", GroupName: "generic_google_api_error_group", Message: "Test"},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBodyRegex: `"error":"Error processing contacts from Google group."`,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// Setup mock for fetchContactsFromGoogleGroupFunc
+			fetchContactsFromGoogleGroupFunc = func(authToken string, groupName string, forUserLog string) ([]map[string]string, error) {
+				if groupName == "Default Google Group" {
+					return []map[string]string{
+						{"name": "Test Contact 1", "phoneNumber": "+11234567890"},
+						{"name": "Test Contact 2", "phoneNumber": "9876543210"},
+						{"name": "Test Contact 3", "phoneNumber": "invalid-number"},
+						{"name": "Test Contact 4", "phoneNumber": "+44-20-1234-5678"},
+						{"name": "Test Contact 5", "phoneNumber": "12345"},
+						{"name": "Test Contact 6", "phoneNumber": ""},
+					}, nil
+				}
+				if groupName == "Work Contacts" {
+					return []map[string]string{
+						{"name": "Alice Smith", "phoneNumber": "+15551234567"},
+						{"name": "Bob Johnson", "phoneNumber": " (555) 876-5432"},
+					}, nil
+				}
+				if groupName == "errorgroup" {
+					return nil, errors.New("simulated error fetching contacts from Google Group")
+				}
+				if groupName == "emptygroup" {
+					return []map[string]string{}, nil
+				}
+				if groupName == "auth_error_group" {
+					return nil, errors.New("Google API error: Some message (Status: UNAUTHENTICATED)")
+				}
+				if groupName == "perm_denied_group" {
+					return nil, errors.New("Google API error: Some message (Status: PERMISSION_DENIED)")
+				}
+				if groupName == "non_existent_google_group" {
+					return nil, fmt.Errorf("contact group '%s' not found for user %s", groupName, forUserLog)
+				}
+				if groupName == "generic_google_api_error_group" {
+					return nil, errors.New("some other Google API error")
+				}
+				return nil, fmt.Errorf("unexpected groupName in mock: %s", groupName)
+			}
+
 			jsonBody, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
 
@@ -1186,9 +1261,9 @@ func TestDeleteContactGroupFromMode(t *testing.T) {
 	// Pre-set auth token for testUserID1
 	setGoogleTokenForUser(t, testUserID1, "valid-google-token")
 	// Setup initial data for User1, Mode "cleaningmode"
-	// Contacts from default placeholder: "11234567890", "919876543210", "442012345678"
+	// Contacts from default mock: "11234567890", "919876543210", "442012345678"
 	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "11234567890", "To be deleted")
-	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "919876543210", "Also deleted")
+	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "919876543210", "Also deleted") // This will be 91919876543210 after normalization in test
 	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "442012345678", "This one too")
 	_, _ = testDB.Exec("INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) VALUES (?, ?, ?, ?)", testUserID1, "cleaningmode", "0000000000", "Keep this one") // Not in placeholder group
 
@@ -1207,7 +1282,7 @@ func TestDeleteContactGroupFromMode(t *testing.T) {
 			userToken: testUserToken1,
 			payload:   ContactGroupDeleteRequest{ModeName: "CleaningMode", GroupName: "Default Google Group"}, // Uses default placeholder
 			expectedStatus: http.StatusOK,
-			// Placeholder has 6 contacts, 3 invalid/empty, 3 valid. So 3 processed, 3 deleted.
+	// Mock has 6 contacts, 3 invalid/empty, 3 valid. So 3 processed, 3 deleted.
 			expectedBodyRegex: `3 contacts from group 'Default Google Group' processed for deletion from mode 'cleaningmode'. 3 entries actually deleted. 3 contacts skipped.`,
 			dbChecks: func(t *testing.T, userID, modeName string) {
 				var count int
@@ -1216,8 +1291,9 @@ func TestDeleteContactGroupFromMode(t *testing.T) {
 				assert.Equal(t, 1, count, "Only the '0000000000' contact should remain")
 
 				var phone string
-				err = testDB.Get(&phone, "SELECT phone_number FROM autoreply_modes WHERE user_id = ? AND mode_name = ?", userID, strings.ToLower(modeName))
-				require.NoError(t, err)
+		// Ensure the phone number that remains is the one not in the mocked group
+		err = testDB.Get(&phone, "SELECT phone_number FROM autoreply_modes WHERE user_id = ? AND mode_name = ? AND phone_number = '0000000000'", userID, strings.ToLower(modeName))
+		require.NoError(t, err, "The non-group contact '0000000000' should still exist")
 				assert.Equal(t, "0000000000", phone)
 			},
 		},
@@ -1250,13 +1326,84 @@ func TestDeleteContactGroupFromMode(t *testing.T) {
 			userID:    testUserID1,
 			userToken: testUserToken1,
 			payload:   ContactGroupDeleteRequest{ModeName: "AnyMode", GroupName: "emptygroup"},
-			expectedStatus: http.StatusOK,
-			expectedBodyRegex: `"error":"No contacts found in group 'emptygroup' to process for deletion."`,
+			expectedStatus: http.StatusOK, // Adjusted: 200 OK with detail message
+			expectedBodyRegex: `No contacts found in group 'emptygroup' to process for deletion.`,
+		},
+		{
+			name:      "Google API UNAUTHENTICATED error on delete",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "AuthTestDelete", GroupName: "auth_error_group_delete"},
+			expectedStatus: http.StatusForbidden,
+			expectedBodyRegex: `"error":"Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."`,
+		},
+		{
+			name:      "Google API PERMISSION_DENIED error on delete",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "PermTestDelete", GroupName: "perm_denied_group_delete"},
+			expectedStatus: http.StatusForbidden,
+			expectedBodyRegex: `"error":"Failed to authenticate with Google Contacts API. Please check your token or re-authenticate via /autoreply/contactgroupauth."`,
+		},
+		{
+			name:      "Google API group not found error on delete",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "NotFoundTestDelete", GroupName: "non_existent_google_group_delete"},
+			expectedStatus: http.StatusNotFound,
+			expectedBodyRegex: `"error":"Specified contact group 'non_existent_google_group_delete' not found."`,
+		},
+		{
+			name:      "Google API generic error on delete",
+			userID:    testUserID1,
+			userToken: testUserToken1,
+			payload:   ContactGroupDeleteRequest{ModeName: "GenericErrorTestDelete", GroupName: "generic_google_api_error_group_delete"},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBodyRegex: `"error":"Error processing contacts from Google group for deletion."`,
 		},
 	}
+	// Store original fetch function to restore after tests
+	originalFetchContactsFunc := fetchContactsFromGoogleGroupFunc
+	defer func() { fetchContactsFromGoogleGroupFunc = originalFetchContactsFunc }()
+
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// Setup mock for fetchContactsFromGoogleGroupFunc for delete tests
+			fetchContactsFromGoogleGroupFunc = func(authToken string, groupName string, forUserLog string) ([]map[string]string, error) {
+				if groupName == "Default Google Group" { // Used in "Successful delete - default group"
+					return []map[string]string{
+						{"name": "Test Contact 1", "phoneNumber": "+11234567890"},
+						{"name": "Test Contact 2", "phoneNumber": "9876543210"},
+						{"name": "Test Contact 3", "phoneNumber": "invalid-number"},
+						{"name": "Test Contact 4", "phoneNumber": "+44-20-1234-5678"},
+						{"name": "Test Contact 5", "phoneNumber": "12345"},
+						{"name": "Test Contact 6", "phoneNumber": ""},
+					}, nil
+				}
+				if groupName == "emptygroup" {
+					return []map[string]string{}, nil
+				}
+				if groupName == "auth_error_group_delete" {
+					return nil, errors.New("Google API error: Some message (Status: UNAUTHENTICATED)")
+				}
+				if groupName == "perm_denied_group_delete" {
+					return nil, errors.New("Google API error: Some message (Status: PERMISSION_DENIED)")
+				}
+				if groupName == "non_existent_google_group_delete" {
+					return nil, fmt.Errorf("contact group '%s' not found for user %s", groupName, forUserLog)
+				}
+				if groupName == "generic_google_api_error_group_delete" {
+					return nil, errors.New("some other Google API error for delete")
+				}
+				// This case is for "fetchContactsFromGoogleGroup returns error on delete"
+				if groupName == "errorgroup" {
+					return nil, errors.New("simulated error fetching contacts from Google Group for delete")
+				}
+				return nil, fmt.Errorf("unexpected groupName in mock for delete: %s", groupName)
+			}
+
+
 			jsonBody, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
 
