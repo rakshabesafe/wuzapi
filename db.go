@@ -41,7 +41,9 @@ func InitializeDatabase(exPath string) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Create tables for sqlite
+	// Call to createTables can be removed if it becomes entirely empty,
+	// or left if it might handle other non-migrated setup in the future.
+	// For now, it will be called but do nothing.
 	if err := createTables(db, "sqlite"); err != nil {
 		return nil, fmt.Errorf("failed to create tables for sqlite: %w", err)
 	}
@@ -76,48 +78,11 @@ func createTables(db *sqlx.DB, dbType string) error {
 
 	// No initial data for active_mode as it's user-specific and populated on demand.
 
-	// Alter users table to add google_contacts_auth_token column
-	alterUsersTableSQL := ""
-	if dbType == "postgres" {
-		alterUsersTableSQL = `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_contacts_auth_token TEXT;`
-	} else { // sqlite
-		// Check if column exists first for older SQLite versions.
-		// For newer SQLite (3.16.0+), ADD COLUMN is idempotent if the column exists.
-		// However, to be safe and support potentially older versions, we can check.
-		// A simpler approach for tests or if newer SQLite is guaranteed is just:
-		// alterUsersTableSQL = `ALTER TABLE users ADD COLUMN google_contacts_auth_token TEXT;`
-		// For robustness in a production-like environment, checking PRAGMA is better.
-
-		// Let's use the simpler ALTER TABLE for now, assuming modern SQLite.
-		// If this causes issues, a PRAGMA check can be added.
-		alterUsersTableSQL = `ALTER TABLE users ADD COLUMN google_contacts_auth_token TEXT;`
-
-		// Check if column exists to avoid error on re-run with older SQLite
-		var columnName string
-		query := "SELECT name FROM pragma_table_info('users') WHERE name = 'google_contacts_auth_token';"
-		err := db.Get(&columnName, query)
-		if err == nil && columnName == "google_contacts_auth_token" {
-			// Column already exists, no need to alter
-			alterUsersTableSQL = ""
-		} else if err != nil && err.Error() != "sql: no rows in result set" {
-            // An actual error occurred querying pragma_table_info
-            return fmt.Errorf("failed to check users table schema: %w", err)
-        }
-        // If err is "sql: no rows in result set", column doesn't exist, proceed with ALTER.
-	}
-
-	if alterUsersTableSQL != "" {
-		if _, err := db.Exec(alterUsersTableSQL); err != nil {
-			// For SQLite, if the column already exists, this might return an error "duplicate column name"
-			// We'll log it and continue if it's that specific error for SQLite.
-			if dbType == "sqlite" && strings.Contains(err.Error(), "duplicate column name") {
-				// log.Warn().Msg("Column google_contacts_auth_token already exists in users table (SQLite).")
-			} else {
-				return fmt.Errorf("failed to alter users table to add google_contacts_auth_token: %w", err)
-			}
-		}
-	}
-
+	// The logic for adding google_contacts_auth_token has been moved to migrations (ID 5).
+	// The createTables function is now only responsible for tables that are not part of the core migration sequence,
+	// or if we decide that all table creations should eventually be migrations.
+	// For now, autoreply_modes and active_mode are created here. If they were to be migrated,
+	// their creation SQL would also be removed from here and put into new migration entries.
 
 	return nil
 }
