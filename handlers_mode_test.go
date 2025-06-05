@@ -273,7 +273,7 @@ func TestAddModeAutoreply(t *testing.T) {
 			if tc.name == "Update existing mode message" {
 				setupPayload := ModeAutoreplyRequest{ModeName: "Work", Phone: "111222333", Message: "Initial message"}
 				jsonBody, _ := json.Marshal(setupPayload)
-				req := newAuthenticatedRequest(t, "POST", "/mode/autoreply", bytes.NewBuffer(jsonBody), testUserToken1, testUserID1)
+				req := newAuthenticatedRequest(t, "POST", "/autoreply/mode", bytes.NewBuffer(jsonBody), testUserToken1, testUserID1)
 				rr := httptest.NewRecorder()
 				testRouter.ServeHTTP(rr, req) // Use testRouter directly
 				require.Equal(t, http.StatusCreated, rr.Code)
@@ -283,7 +283,7 @@ func TestAddModeAutoreply(t *testing.T) {
 			jsonBody, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
 
-			req := newAuthenticatedRequest(t, "POST", "/mode/autoreply", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "POST", "/autoreply/mode", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 
@@ -385,7 +385,7 @@ func TestDeleteModeAutoreply(t *testing.T) {
 			jsonBody, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
 
-			req := newAuthenticatedRequest(t, "DELETE", "/mode/autoreply", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "DELETE", "/autoreply/mode", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 
@@ -493,7 +493,7 @@ func TestGetModeAutoreplies(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := newAuthenticatedRequest(t, "GET", "/mode/autoreply"+tc.modeNameQuery, nil, tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "GET", "/autoreply/mode"+tc.modeNameQuery, nil, tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 
@@ -654,7 +654,7 @@ func TestEnableMode(t *testing.T) {
 			jsonBody, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
 
-			req := newAuthenticatedRequest(t, "POST", "/mode/enablemode", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "POST", "/autoreply/enablemode", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 
@@ -747,7 +747,7 @@ func TestDisableMode(t *testing.T) {
 			jsonBody, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
 
-			req := newAuthenticatedRequest(t, "POST", "/mode/disablemode", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "POST", "/autoreply/disablemode", bytes.NewBuffer(jsonBody), tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 
@@ -812,7 +812,7 @@ func TestGetCurrentMode(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := newAuthenticatedRequest(t, "GET", "/mode/currentmode", nil, tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "GET", "/autoreply/currentmode", nil, tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 
@@ -890,7 +890,7 @@ func TestClearModes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := newAuthenticatedRequest(t, "POST", "/mode/clear", nil, tc.userToken, tc.userID)
+			req := newAuthenticatedRequest(t, "POST", "/autoreply/clearmode", nil, tc.userToken, tc.userID)
 			rr := httptest.NewRecorder()
 			testRouter.ServeHTTP(rr, req)
 

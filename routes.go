@@ -105,14 +105,14 @@ func (s *server) routes() {
 	s.router.Handle("/chat/autoreply", c.Then(s.DeleteAutoReply())).Methods("DELETE")
 	s.router.Handle("/chat/autoreply", c.Then(s.GetAutoReplies())).Methods("GET")
 
-	// Mode Autoreply Routes
-	s.router.Handle("/mode/autoreply", c.Then(s.AddModeAutoreply())).Methods("POST")
-	s.router.Handle("/mode/autoreply", c.Then(s.DeleteModeAutoreply())).Methods("DELETE")
-	s.router.Handle("/mode/autoreply", c.Then(s.GetModeAutoreplies())).Methods("GET")
-	s.router.Handle("/mode/enablemode", c.Then(s.EnableMode())).Methods("POST")
-	s.router.Handle("/mode/disablemode", c.Then(s.DisableMode())).Methods("POST")
-	s.router.Handle("/mode/currentmode", c.Then(s.GetCurrentMode())).Methods("GET")
-	s.router.Handle("/mode/clear", c.Then(s.ClearModes())).Methods("POST")
+	// Autoreply Mode Routes (formerly /mode/)
+	s.router.Handle("/autoreply/mode", c.Then(s.AddModeAutoreply())).Methods("POST")
+	s.router.Handle("/autoreply/mode", c.Then(s.DeleteModeAutoreply())).Methods("DELETE")
+	s.router.Handle("/autoreply/mode", c.Then(s.GetModeAutoreplies())).Methods("GET")
+	s.router.Handle("/autoreply/enablemode", c.Then(s.EnableMode())).Methods("POST")
+	s.router.Handle("/autoreply/disablemode", c.Then(s.DisableMode())).Methods("POST")
+	s.router.Handle("/autoreply/currentmode", c.Then(s.GetCurrentMode())).Methods("GET")
+	s.router.Handle("/autoreply/clearmode", c.Then(s.ClearModes())).Methods("POST")
 
 	// Autoreply Contact Group Routes
 	s.router.Handle("/autoreply/contactgroupauth", c.Then(s.SetGoogleContactsAuthToken())).Methods("POST")
