@@ -50,7 +50,70 @@ var migrations = []Migration{
 		Name:  "add_autoreplies_table",
 		UpSQL: addAutorepliesTableSQLPostgres,
 	},
+	{
+		ID:    5,
+		Name:  "add_google_contacts_auth_token_to_users",
+		UpSQL: "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_contacts_auth_token TEXT NULLABLE;", // Primarily for PostgreSQL
+	},
+	{
+		ID:    6,
+		Name:  "add_autoreply_modes_table",
+		UpSQL: addAutoreplyModesTableSQLPostgres,
+	},
+	{
+		ID:    7,
+		Name:  "add_active_mode_table",
+		UpSQL: addActiveModeTableSQLPostgres,
+	},
 }
+
+const addActiveModeTableSQLPostgres = `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'active_mode') THEN
+        CREATE TABLE active_mode (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            current_mode_name TEXT NULLABLE
+        );
+    END IF;
+END $$;
+`
+
+const addActiveModeTableSQLSQLite = `
+CREATE TABLE IF NOT EXISTS active_mode (
+    user_id TEXT PRIMARY KEY,
+    current_mode_name TEXT NULLABLE,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`
+
+const addAutoreplyModesTableSQLPostgres = `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'autoreply_modes') THEN
+        CREATE TABLE autoreply_modes (
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            mode_name TEXT NOT NULL,
+            phone_number TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (user_id, mode_name, phone_number)
+        );
+    END IF;
+END $$;
+`
+
+const addAutoreplyModesTableSQLSQLite = `
+CREATE TABLE IF NOT EXISTS autoreply_modes (
+    user_id TEXT NOT NULL,
+    mode_name TEXT NOT NULL,
+    phone_number TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE (user_id, mode_name, phone_number)
+);
+`
 
 const addAutorepliesTableSQLPostgres = `
 DO $$
@@ -269,7 +332,31 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
-	} else {
+	} else if migration.ID == 5 { // Special handling for migration 5
+		if db.DriverName() == "sqlite" {
+			log.Info().Msgf("Applying migration ID %d: %s (SQLite specific via helper)", migration.ID, migration.Name)
+			err = addColumnIfNotExistsSQLite(tx, "users", "google_contacts_auth_token", "TEXT NULLABLE")
+		} else { // For PostgreSQL (and potentially others if they support IF NOT EXISTS)
+			log.Info().Msgf("Applying migration ID %d: %s (PostgreSQL specific)", migration.ID, migration.Name)
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 6 { // Create autoreply_modes table
+		if db.DriverName() == "sqlite" {
+			log.Info().Msgf("Applying migration ID %d: %s (SQLite specific via helper)", migration.ID, migration.Name)
+			err = createTableIfNotExistsSQLite(tx, "autoreply_modes", addAutoreplyModesTableSQLSQLite)
+		} else {
+			log.Info().Msgf("Applying migration ID %d: %s (PostgreSQL specific)", migration.ID, migration.Name)
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 7 { // Create active_mode table
+		if db.DriverName() == "sqlite" {
+			log.Info().Msgf("Applying migration ID %d: %s (SQLite specific via helper)", migration.ID, migration.Name)
+			err = createTableIfNotExistsSQLite(tx, "active_mode", addActiveModeTableSQLSQLite)
+		} else {
+			log.Info().Msgf("Applying migration ID %d: %s (PostgreSQL specific)", migration.ID, migration.Name)
+			_, err = tx.Exec(migration.UpSQL) // UpSQL for migration 7 is PostgreSQL specific
+		}
+	} else { // Generic SQL execution for other migrations
 		_, err = tx.Exec(migration.UpSQL)
 	}
 
