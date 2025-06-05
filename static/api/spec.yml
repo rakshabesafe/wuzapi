@@ -18,11 +18,9 @@ tags:
   - name: User
     description: User-related operations (info, check, presence, avatar, contacts)
   - name: Chat
-    description: Operations for sending and managing messages (text, media, autoreply)
-  - name: Mode
-    description: Manage autoreply modes
-  - name: Autoreply Contacts
-    description: Manage autoreply settings using Google Contacts integration
+    description: Operations for sending and managing messages (text, media)
+  - name: Autoreply
+    description: Operations related to autoreply configuration, modes, and contact group integration.
   - name: Group
     description: Operations related to WhatsApp groups
   - name: Newsletter
@@ -1188,7 +1186,7 @@ paths:
   /chat/autoreply:
     post:
       tags:
-        - Chat
+        - Autoreply
       summary: Add an auto-reply
       description: Adds a new auto-reply configuration for the authenticated user.
       security:
@@ -1226,7 +1224,7 @@ paths:
           description: Internal Server Error.
     delete:
       tags:
-        - Chat
+        - Autoreply
       summary: Delete an auto-reply
       description: Deletes an auto-reply configuration based on the phone number for the authenticated user.
       security:
@@ -1260,7 +1258,7 @@ paths:
           description: Internal Server Error.
     get:
       tags:
-        - Chat
+        - Autoreply
       summary: List configured auto-replies
       description: Retrieves all auto-reply configurations for the authenticated user.
       security:
@@ -1279,10 +1277,10 @@ paths:
         "500":
           description: Internal Server Error
 
-  /mode/autoreply:
+  /autoreply/mode:
     post:
       tags:
-        - Mode
+        - Autoreply
       summary: Add or Update Mode Autoreply
       description: Adds a new autoreply entry for a specific mode or updates an existing one (based on ModeName and Phone).
       security:
@@ -1310,7 +1308,7 @@ paths:
           description: Internal Server Error.
     delete:
       tags:
-        - Mode
+        - Autoreply
       summary: Delete Mode Autoreply
       description: Deletes autoreply entries for a specific mode. If 'Phone' is provided, only that specific entry is deleted. Otherwise, all entries for the mode are deleted.
       security:
@@ -1334,7 +1332,7 @@ paths:
           description: Internal Server Error.
     get:
       tags:
-        - Mode
+        - Autoreply
       summary: Get Mode Autoreplies
       description: Retrieves autoreply entries. If 'modeName' query parameter is provided, filters by that mode. Otherwise, retrieves all mode autoreplies for the user.
       security:
@@ -1362,10 +1360,10 @@ paths:
         "500":
           description: Internal Server Error.
 
-  /mode/enablemode:
+  /autoreply/enablemode:
     post:
       tags:
-        - Mode
+        - Autoreply
       summary: Enable an Autoreply Mode
       description: Activates a specific autoreply mode. This clears any existing active autoreplies and populates them with entries from the specified mode.
       security:
@@ -1390,10 +1388,10 @@ paths:
         "500":
           description: Internal Server Error.
 
-  /mode/disablemode:
+  /autoreply/disablemode:
     post:
       tags:
-        - Mode
+        - Autoreply
       summary: Disable an Autoreply Mode
       description: Deactivates the specified autoreply mode if it is currently active. This clears active autoreplies and sets the current mode to none.
       security:
@@ -1416,10 +1414,10 @@ paths:
         "500":
           description: Internal Server Error.
 
-  /mode/currentmode:
+  /autoreply/currentmode:
     get:
       tags:
-        - Mode
+        - Autoreply
       summary: Get Current Active Autoreply Mode
       description: Retrieves the name of the currently active autoreply mode for the user.
       security:
@@ -1434,10 +1432,10 @@ paths:
         "500":
           description: Internal Server Error.
 
-  /mode/clear:
+  /autoreply/clearmode:
     post:
       tags:
-        - Mode
+        - Autoreply
       summary: Clear All Autoreply Modes
       description: Deactivates any currently active autoreply mode and clears all entries from the active autoreply list for the user. It does not delete entries from `autoreply_modes`.
       security:
@@ -1455,7 +1453,7 @@ paths:
   /autoreply/contactgroupauth:
     post:
       tags:
-        - Autoreply Contacts
+        - Autoreply
       summary: Store Google Contacts API Auth Token
       description: Stores or updates the Google OAuth2 access token for the authenticated user, enabling integration with Google Contacts.
       security:
@@ -1485,7 +1483,7 @@ paths:
   /autoreply/contactgroup:
     post:
       tags:
-        - Autoreply Contacts
+        - Autoreply
       summary: Add contacts from a Google Contacts group to an autoreply mode
       description: Fetches contacts from a specified Google Contacts group (using a stored auth token) and adds/updates them in the specified autoreply mode with the given message.
       security:
@@ -1515,7 +1513,7 @@ paths:
           description: Internal Server Error.
     delete:
       tags:
-        - Autoreply Contacts
+        - Autoreply
       summary: Remove contacts from a Google Contacts group from an autoreply mode
       description: Fetches contacts from a specified Google Contacts group (using a stored auth token) and removes them from the specified autoreply mode.
       security:
