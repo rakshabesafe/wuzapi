@@ -72,12 +72,366 @@ type ModeAutoreplyEntry struct {
 	Message  string `json:"Message"`
 }
 
+// AuthTokenRequest defines the structure for the /autoreply/contactgroupauth endpoint
+type AuthTokenRequest struct {
+	AuthToken string `json:"AuthToken"`
+}
+
+// ContactGroupRequest defines the structure for the /autoreply/contactgroup endpoint
+type ContactGroupRequest struct {
+	ModeName  string `json:"ModeName"`
+	GroupName string `json:"GroupName"`
+	Message   string `json:"Message"`
+}
+
+// ContactGroupDeleteRequest defines the structure for the DELETE /autoreply/contactgroup endpoint
+type ContactGroupDeleteRequest struct {
+	ModeName  string `json:"ModeName"`
+	GroupName string `json:"GroupName"`
+}
+
 type Values struct {
 	m map[string]string
 }
 
 func (v Values) Get(key string) string {
 	return v.m[key]
+}
+
+// normalizePhoneNumber attempts to clean and normalize a phone number string.
+// It removes non-numeric characters (except initial '+'), and for 10-digit numbers,
+// assumes it's an Indian number and prefixes "91".
+// Returns the normalized number (digits only) or an error.
+func normalizePhoneNumber(phone string) (string, error) {
+	// Keep initial '+' but remove other non-numeric characters
+	var cleaned strings.Builder
+	hasPlus := strings.HasPrefix(phone, "+")
+	if hasPlus {
+		phone = phone[1:] // Temporarily remove plus for cleaning
+	}
+
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			cleaned.WriteRune(r)
+		}
+	}
+	normalized := cleaned.String()
+
+	if normalized == "" {
+		return "", errors.New("phone number is empty after cleaning")
+	}
+
+	// If original had '+', it's likely an international number, keep as is (digits only)
+	// Otherwise, apply length-based rules (e.g., for Indian numbers)
+	if !hasPlus {
+		if len(normalized) == 10 {
+			// Assume 10-digit numbers without '+' are Indian, prefix with 91
+			// This is a common convention but might need adjustment for other regions/rules
+			return "91" + normalized, nil
+		}
+		// Add more rules here if needed, e.g., for other country-specific lengths without '+'
+	}
+
+	// Basic validation: check if it's all digits now and has a reasonable length
+	// This is a very basic check. Real-world validation is much more complex.
+	if len(normalized) < 7 || len(normalized) > 15 { // Arbitrary min/max lengths
+		return "", fmt.Errorf("phone number '%s' has invalid length after normalization", normalized)
+	}
+
+	return normalized, nil
+}
+
+
+// fetchContactsFromGoogleGroup is a placeholder function to simulate fetching contacts.
+// TODO: Replace with actual Google Contacts API call in a future step.
+func fetchContactsFromGoogleGroup(authToken string, groupName string, forUser string) ([]map[string]string, error) {
+	log.Info().Str("user_id", forUser).Str("groupName", groupName).Msg("Simulating fetching contacts from Google Group")
+	// Simulate an error if a specific group name is used for testing error paths
+	if groupName == "errorgroup" {
+		return nil, errors.New("simulated error fetching contacts from Google Group")
+	}
+
+	// Simulate different contact lists based on groupName for more dynamic testing
+	if strings.ToLower(groupName) == "work contacts" {
+		return []map[string]string{
+			{"name": "Alice Smith", "phoneNumber": "+15551234567"},
+			{"name": "Bob Johnson", "phoneNumber": " (555) 876-5432"}, // Needs cleaning
+		}, nil
+	}
+	if strings.ToLower(groupName) == "emptygroup" {
+		return []map[string]string{}, nil
+	}
+
+	// Default hardcoded list
+	return []map[string]string{
+		{"name": "Test Contact 1", "phoneNumber": "+11234567890"},      // Valid US
+		{"name": "Test Contact 2", "phoneNumber": "9876543210"},       // Assumed Indian, needs 91
+		{"name": "Test Contact 3", "phoneNumber": "invalid-number"},   // Invalid
+		{"name": "Test Contact 4", "phoneNumber": "+44-20-1234-5678"}, // Valid UK with hyphen
+		{"name": "Test Contact 5", "phoneNumber": "12345"},            // Too short
+		{"name": "Test Contact 6", "phoneNumber": ""},                  // Empty
+	}, nil
+}
+
+// AddContactGroupToMode handles adding contacts from a (simulated) Google Contact Group to a mode.
+func (s *server) AddContactGroupToMode() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req ContactGroupRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		if strings.TrimSpace(req.ModeName) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing ModeName in Payload"))
+			return
+		}
+		if strings.TrimSpace(req.GroupName) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing GroupName in Payload"))
+			return
+		}
+		if strings.TrimSpace(req.Message) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing Message in Payload"))
+			return
+		}
+
+		modeName := strings.ToLower(req.ModeName)
+		if !isValidModeName(modeName) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
+			return
+		}
+
+		// 1. Retrieve Auth Token
+		var googleAuthToken sql.NullString
+		tokenQuery := "SELECT google_contacts_auth_token FROM users WHERE id = $1"
+		if s.db.DriverName() == "sqlite" {
+			tokenQuery = "SELECT google_contacts_auth_token FROM users WHERE id = ?"
+		}
+		err := s.db.Get(&googleAuthToken, tokenQuery, txtid)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Error().Str("user_id", txtid).Msg("User not found when trying to fetch Google Auth Token")
+				s.Respond(w, r, http.StatusNotFound, errors.New("User not found"))
+				return
+			}
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to fetch google_contacts_auth_token")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve auth token information"))
+			return
+		}
+
+		if !googleAuthToken.Valid || googleAuthToken.String == "" {
+			s.Respond(w, r, http.StatusForbidden, errors.New("Google Contacts API token not configured. Please use /autoreply/contactgroupauth."))
+			return
+		}
+
+		// 2. Fetch contacts (placeholder)
+		contacts, err := fetchContactsFromGoogleGroup(googleAuthToken.String, req.GroupName, txtid)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Failed to fetch contacts from Google Group placeholder")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contact group"))
+			return
+		}
+
+		if len(contacts) == 0 {
+			s.Respond(w, r, http.StatusOK, errors.New(fmt.Sprintf("No contacts found or processed for group '%s'.", req.GroupName)))
+			return
+		}
+
+		// 3. Process contacts and add to autoreply_modes
+		var upsertQuery string
+		dbType := s.db.DriverName()
+		if dbType == "postgres" {
+			upsertQuery = `INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message)
+                           VALUES ($1, $2, $3, $4)
+                           ON CONFLICT (user_id, mode_name, phone_number)
+                           DO UPDATE SET message = EXCLUDED.message;`
+		} else { // sqlite
+			upsertQuery = `INSERT OR REPLACE INTO autoreply_modes (user_id, mode_name, phone_number, message)
+                           VALUES (?, ?, ?, ?);`
+		}
+
+		var processedCount, skippedCount int
+		tx, err := s.db.Beginx()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for AddContactGroupToMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts"))
+			return
+		}
+		defer tx.Rollback() // Rollback if not committed
+
+		stmt, err := tx.Preparex(upsertQuery)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to prepare statement for inserting mode autoreplies")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts"))
+			return
+		}
+		defer stmt.Close()
+
+		for _, contact := range contacts {
+			phoneNumber, ok := contact["phoneNumber"]
+			if !ok || strings.TrimSpace(phoneNumber) == "" {
+				log.Warn().Str("user_id", txtid).Str("contact_name", contact["name"]).Msg("Skipping contact due to missing or empty phone number")
+				skippedCount++
+				continue
+			}
+
+			normalizedPhone, normErr := normalizePhoneNumber(phoneNumber)
+			if normErr != nil {
+				log.Warn().Err(normErr).Str("user_id", txtid).Str("original_phone", phoneNumber).Str("contact_name", contact["name"]).Msg("Skipping contact due to phone normalization error")
+				skippedCount++
+				continue
+			}
+
+			if _, err := stmt.Exec(txtid, modeName, normalizedPhone, req.Message); err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Str("normalized_phone", normalizedPhone).Msg("Failed to upsert contact into autoreply_modes")
+				// Decide if one failure should stop all, for now, we'll skip and count
+				skippedCount++
+				continue
+			}
+			processedCount++
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for AddContactGroupToMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to save contact group data"))
+			return
+		}
+
+		detailMsg := fmt.Sprintf("%d contacts processed and added/updated for mode '%s'. %d contacts skipped.", processedCount, modeName, skippedCount)
+		response := map[string]string{"detail": detailMsg}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
+}
+
+// DeleteContactGroupFromMode handles deleting contacts from a (simulated) Google Contact Group from a mode.
+func (s *server) DeleteContactGroupFromMode() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req ContactGroupDeleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		if strings.TrimSpace(req.ModeName) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing ModeName in Payload"))
+			return
+		}
+		if strings.TrimSpace(req.GroupName) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing GroupName in Payload"))
+			return
+		}
+
+		modeName := strings.ToLower(req.ModeName)
+		if !isValidModeName(modeName) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
+			return
+		}
+
+		// 1. Retrieve Auth Token
+		var googleAuthToken sql.NullString
+		tokenQuery := "SELECT google_contacts_auth_token FROM users WHERE id = $1"
+		if s.db.DriverName() == "sqlite" {
+			tokenQuery = "SELECT google_contacts_auth_token FROM users WHERE id = ?"
+		}
+		err := s.db.Get(&googleAuthToken, tokenQuery, txtid)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Error().Str("user_id", txtid).Msg("User not found when trying to fetch Google Auth Token for delete op")
+				s.Respond(w, r, http.StatusNotFound, errors.New("User not found"))
+				return
+			}
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to fetch google_contacts_auth_token for delete op")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to retrieve auth token information"))
+			return
+		}
+
+		if !googleAuthToken.Valid || googleAuthToken.String == "" {
+			s.Respond(w, r, http.StatusForbidden, errors.New("Google Contacts API token not configured. Please use /autoreply/contactgroupauth."))
+			return
+		}
+
+		// 2. Fetch contacts (placeholder) - same function as Add
+		contacts, err := fetchContactsFromGoogleGroup(googleAuthToken.String, req.GroupName, txtid)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Str("groupName", req.GroupName).Msg("Failed to fetch contacts from Google Group placeholder for delete op")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contact group for deletion"))
+			return
+		}
+
+		if len(contacts) == 0 {
+			s.Respond(w, r, http.StatusOK, errors.New(fmt.Sprintf("No contacts found in group '%s' to process for deletion.", req.GroupName)))
+			return
+		}
+
+		// 3. Process contacts for deletion from autoreply_modes
+		deleteQuery := "DELETE FROM autoreply_modes WHERE user_id = $1 AND mode_name = $2 AND phone_number = $3"
+		if s.db.DriverName() == "sqlite" {
+			deleteQuery = "DELETE FROM autoreply_modes WHERE user_id = ? AND mode_name = ? AND phone_number = ?"
+		}
+
+		var processedCount, skippedCount, actuallyDeletedCount int
+
+		tx, err := s.db.Beginx()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to begin transaction for DeleteContactGroupFromMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts for deletion"))
+			return
+		}
+		defer tx.Rollback()
+
+		stmt, err := tx.Preparex(deleteQuery)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to prepare statement for deleting mode autoreplies")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to process contacts for deletion"))
+			return
+		}
+		defer stmt.Close()
+
+		for _, contact := range contacts {
+			phoneNumber, ok := contact["phoneNumber"]
+			if !ok || strings.TrimSpace(phoneNumber) == "" {
+				log.Warn().Str("user_id", txtid).Str("contact_name", contact["name"]).Msg("Skipping contact for deletion due to missing or empty phone number")
+				skippedCount++
+				continue
+			}
+
+			normalizedPhone, normErr := normalizePhoneNumber(phoneNumber)
+			if normErr != nil {
+				log.Warn().Err(normErr).Str("user_id", txtid).Str("original_phone", phoneNumber).Str("contact_name", contact["name"]).Msg("Skipping contact for deletion due to phone normalization error")
+				skippedCount++
+				continue
+			}
+
+			result, err := stmt.Exec(txtid, modeName, normalizedPhone)
+			if err != nil {
+				log.Error().Err(err).Str("user_id", txtid).Str("normalized_phone", normalizedPhone).Msg("Failed to delete contact from autoreply_modes")
+				// Decide if one failure should stop all, for now, we'll skip and count
+				skippedCount++
+				continue
+			}
+			processedCount++
+			rowsAffected, _ := result.RowsAffected()
+			if rowsAffected > 0 {
+				actuallyDeletedCount++
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for DeleteContactGroupFromMode")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to save changes for contact group deletion"))
+			return
+		}
+
+		detailMsg := fmt.Sprintf("%d contacts from group '%s' processed for deletion from mode '%s'. %d entries actually deleted. %d contacts skipped.", processedCount, req.GroupName, modeName, actuallyDeletedCount, skippedCount)
+		response := map[string]string{"detail": detailMsg}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
+	}
 }
 
 var messageTypes = []string{"Message", "ReadReceipt", "Presence", "HistorySync", "ChatPresence", "All"}
@@ -240,6 +594,54 @@ func (s *server) Connect() http.HandlerFunc {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 			return
 		}
+	}
+}
+
+// SetGoogleContactsAuthToken handles storing the Google Contacts API authentication token for a user.
+func (s *server) SetGoogleContactsAuthToken() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var req AuthTokenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode payload"))
+			return
+		}
+
+		if strings.TrimSpace(req.AuthToken) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Missing AuthToken in Payload"))
+			return
+		}
+
+		query := "UPDATE users SET google_contacts_auth_token = $1 WHERE id = $2"
+		if s.db.DriverName() == "sqlite" {
+			query = "UPDATE users SET google_contacts_auth_token = ? WHERE id = ?"
+		}
+
+		result, err := s.db.Exec(query, req.AuthToken, txtid)
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to update google_contacts_auth_token")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to store auth token"))
+			return
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			log.Error().Err(err).Str("user_id", txtid).Msg("Failed to check affected rows for google_contacts_auth_token update")
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to confirm token storage"))
+			return
+		}
+		if rowsAffected == 0 {
+			// This case should ideally not happen if txtid is always valid from middleware,
+			// but good to be aware of. It means the user ID didn't match any row.
+			log.Warn().Str("user_id", txtid).Msg("No user found to update google_contacts_auth_token, though middleware should ensure user exists")
+			s.Respond(w, r, http.StatusNotFound, errors.New("User not found to store token"))
+			return
+		}
+
+		response := map[string]string{"detail": "Auth token stored successfully"}
+		responseJson, _ := json.Marshal(response)
+		s.Respond(w, r, http.StatusOK, string(responseJson))
 	}
 }
 
@@ -432,12 +834,12 @@ func (s *server) AddModeAutoreply() http.HandlerFunc {
 		var query string
 		dbType := s.db.DriverName()
 		if dbType == "postgres" {
-			query = `INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message) 
-                     VALUES ($1, $2, $3, $4) 
-                     ON CONFLICT (user_id, mode_name, phone_number) 
+			query = `INSERT INTO autoreply_modes (user_id, mode_name, phone_number, message)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (user_id, mode_name, phone_number)
                      DO UPDATE SET message = EXCLUDED.message;`
 		} else { // sqlite
-			query = `INSERT OR REPLACE INTO autoreply_modes (user_id, mode_name, phone_number, message) 
+			query = `INSERT OR REPLACE INTO autoreply_modes (user_id, mode_name, phone_number, message)
                      VALUES (?, ?, ?, ?);`
 		}
 
@@ -579,7 +981,7 @@ func (s *server) EnableMode() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
 			return
 		}
-		
+
 		dbType := s.db.DriverName()
 
 		// Start transaction
@@ -618,7 +1020,7 @@ func (s *server) EnableMode() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (fetch new)"))
 			return
 		}
-		
+
 		if len(entriesToActivate) == 0 {
              log.Warn().Str("user_id", txtid).Str("mode_name", modeName).Msg("EnableMode called for a mode with no entries or mode does not exist")
         }
@@ -671,7 +1073,7 @@ func (s *server) EnableMode() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to enable mode (commit)"))
 			return
 		}
-		
+
 		detailMsg := fmt.Sprintf("Mode '%s' enabled successfully. %d autoreplies activated.", modeName, len(entriesToActivate))
 		response := map[string]string{"detail": detailMsg}
 		responseJson, _ := json.Marshal(response)
@@ -695,7 +1097,7 @@ func (s *server) DisableMode() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid ModeName: must be alphanumeric"))
 			return
 		}
-		
+
 		dbType := s.db.DriverName()
 
 		// Start transaction
@@ -742,7 +1144,7 @@ func (s *server) DisableMode() http.HandlerFunc {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to disable mode (set null)"))
 				return
 			}
-			
+
 			// Commit transaction
 			if err := tx.Commit(); err != nil {
 				log.Error().Err(err).Str("user_id", txtid).Msg("Failed to commit transaction for DisableMode")
@@ -766,7 +1168,7 @@ func (s *server) DisableMode() http.HandlerFunc {
 func (s *server) GetCurrentMode() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
-		
+
 		dbType := s.db.DriverName()
 
 		var currentMode sql.NullString
@@ -788,7 +1190,7 @@ func (s *server) GetCurrentMode() http.HandlerFunc {
 		} else {
 			modeNameStr = "" // Or null, depending on desired JSON output for no active mode
 		}
-		
+
 		response := map[string]interface{}{"current_mode_name": modeNameStr}
 		if !currentMode.Valid {
              response = map[string]interface{}{"current_mode_name": nil}
@@ -832,10 +1234,10 @@ func (s *server) ClearModes() http.HandlerFunc {
 		} else { // sqlite
 			// Check if user exists in active_mode, if not, insert. Otherwise, update.
 			// This is safer than just UPDATE if a user might not have an entry yet.
-			updateActiveModeQuery = `INSERT OR REPLACE INTO active_mode (user_id, current_mode_name) 
+			updateActiveModeQuery = `INSERT OR REPLACE INTO active_mode (user_id, current_mode_name)
                                      VALUES (?, (SELECT current_mode_name FROM active_mode WHERE user_id = ?));` // Keep existing if any, then set to NULL
             // Simpler: Just ensure it's NULL. If the row doesn't exist, this is fine. If it does, it sets to NULL.
-            // However, to ensure the row exists for future GetCurrentMode calls to not return ErrNoRows (unless that's desired), 
+            // However, to ensure the row exists for future GetCurrentMode calls to not return ErrNoRows (unless that's desired),
             // an UPSERT type logic is better.
             updateActiveModeQuery = `INSERT INTO active_mode (user_id, current_mode_name) VALUES (?, NULL)
                                      ON CONFLICT(user_id) DO UPDATE SET current_mode_name = NULL;` // For SQLite 3.24+
