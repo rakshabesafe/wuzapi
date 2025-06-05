@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings" // Added this line
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
