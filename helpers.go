@@ -1,26 +1,41 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"net/http"
 )
 
-func Find(slice []string, val string) bool {
-	for _, item := range slice {
+// Find takes a slice of strings and looks for an element in it. If found it will
+// return its key/index, otherwise it will return -1 and a bool of false.
+func Find(slice []string, val string) (int, bool) {
+	for i, item := range slice {
 		if item == val {
-			return true
+			return i, true
 		}
 	}
-	return false
+	return -1, false
+}
+
+// Values struct holds key-value pairs, typically for user information.
+type Values struct {
+	m map[string]string
+}
+
+// Get retrieves a value by key from the Values struct.
+func (v Values) Get(key string) string {
+	return v.m[key]
 }
 
 // Update entry in User map
-func updateUserInfo(values interface{}, field string, value string) interface{} {
-	log.Debug().Str("field", field).Str("value", value).Msg("User info updated")
-	values.(Values).m[field] = value
-	return values
+// This version is type-safe with the Values struct.
+func updateUserInfo(v Values, key string, value string) Values {
+	// Ensure the map is initialized if it's nil, which can happen if Values is zero-initialized.
+	if v.m == nil {
+		v.m = make(map[string]string)
+	}
+	log.Debug().Str("field", key).Str("value", value).Msg("User info updated")
+	v.m[key] = value
+	return v
 }
 
 // webhook for regular messages
@@ -73,12 +88,4 @@ func callHookFile(myurl string, payload map[string]string, id string, file strin
 	log.Info().Int("status", resp.StatusCode()).Str("body", string(resp.Body())).Msg("POST request completed")
 
 	return nil
-}
-
-func (s *server) respondWithJSON(w http.ResponseWriter, statusCode int, payload interface{}) {
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		log.Error().Err(err).Msg("Failed to encode JSON response")
-		w.WriteHeader(http.StatusInternalServerError)
-	}
 }

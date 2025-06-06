@@ -149,16 +149,16 @@ func (s *server) Connect() http.HandlerFunc {
 		} else {
 			var subscribedEvents []string
 			if len(t.Subscribe) < 1 {
-				if !Find(subscribedEvents, "All") {
+				if _, found := Find(subscribedEvents, "All"); !found {
 					subscribedEvents = append(subscribedEvents, "All")
 				}
 			} else {
 				for _, arg := range t.Subscribe {
-					if !Find(messageTypes, arg) {
+					if _, found := Find(messageTypes, arg); !found {
 						log.Warn().Str("Type", arg).Msg("Message type discarded")
 						continue
 					}
-					if !Find(subscribedEvents, arg) {
+					if _, found := Find(subscribedEvents, arg); !found {
 						subscribedEvents = append(subscribedEvents, arg)
 					}
 				}
@@ -3940,36 +3940,7 @@ func updateUserInfo(v Values, key string, value string) Values {
 	return v
 }
 
-// Helper function (not a handler)
-func parseJID(arg string) (types.JID, bool) {
-	if arg[0] == '+' {
-		arg = arg[1:]
-	}
-	if !strings.ContainsRune(arg, '@') {
-		return types.NewJID(arg, types.DefaultUserServer), true
-	}
-	recipient, err := types.ParseJID(arg)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to parse JID")
-		return recipient, false
-	} else if recipient.User == "" {
-		log.Warn().Msg("Recipient user is empty")
-		return recipient, false
-	}
-	return recipient, true
-}
-
 // Find takes a slice and looks for an element in it. If found it will
-// return it's key, otherwise it will return -1 and a bool of false.
-func Find(slice []string, val string) (int, bool) {
-	for i, item := range slice {
-		if item == val {
-			return i, true
-		}
-	}
-	return -1, false
-}
-
 // respondWithJSON is a helper for admin routes to send JSON responses
 func (s *server) respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	response, _ := json.Marshal(payload)

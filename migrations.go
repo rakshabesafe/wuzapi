@@ -73,8 +73,9 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'active_mode') THEN
         CREATE TABLE active_mode (
-            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            current_mode_name TEXT NULLABLE
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+            mode_id INTEGER NULLABLE REFERENCES autoreply_modes(id) ON DELETE SET NULL
         );
     END IF;
 END $$;
@@ -82,9 +83,11 @@ END $$;
 
 const addActiveModeTableSQLSQLite = `
 CREATE TABLE IF NOT EXISTS active_mode (
-    user_id TEXT PRIMARY KEY,
-    current_mode_name TEXT NULLABLE,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL UNIQUE,
+    mode_id INTEGER NULLABLE,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(mode_id) REFERENCES autoreply_modes(id) ON DELETE SET NULL
 );
 `
 
@@ -93,12 +96,10 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'autoreply_modes') THEN
         CREATE TABLE autoreply_modes (
+            id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             mode_name TEXT NOT NULL,
-            phone_number TEXT NOT NULL,
-            message TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (user_id, mode_name, phone_number)
+            UNIQUE (user_id, mode_name)
         );
     END IF;
 END $$;
@@ -106,13 +107,11 @@ END $$;
 
 const addAutoreplyModesTableSQLSQLite = `
 CREATE TABLE IF NOT EXISTS autoreply_modes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     mode_name TEXT NOT NULL,
-    phone_number TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE (user_id, mode_name, phone_number)
+    UNIQUE (user_id, mode_name)
 );
 `
 

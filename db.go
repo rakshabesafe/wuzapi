@@ -50,39 +50,15 @@ func InitializeDatabase(exPath string) (*sqlx.DB, error) {
 }
 
 func createTables(db *sqlx.DB, dbType string) error {
-	// SQL for creating autoreply_modes table
-	autoreplyModesTableSQL := `
-	CREATE TABLE IF NOT EXISTS autoreply_modes (
-		user_id TEXT NOT NULL,
-		mode_name TEXT NOT NULL,
-		phone_number TEXT NOT NULL,
-		message TEXT NOT NULL,
-		UNIQUE (user_id, mode_name, phone_number)
-	);`
+	// The logic for creating autoreply_modes and active_mode tables
+	// has been moved to the migration system.
+	// See migrations with ID 6 and 7.
 
-	// SQL for creating active_mode table
-	activeModeTableSQL := `
-	CREATE TABLE IF NOT EXISTS active_mode (
-		user_id TEXT PRIMARY KEY NOT NULL,
-		current_mode_name TEXT NULLABLE
-	);`
+	// The logic for adding google_contacts_auth_token has also been moved to migrations (ID 5).
 
-	// Execute table creation statements
-	if _, err := db.Exec(autoreplyModesTableSQL); err != nil {
-		return fmt.Errorf("failed to create autoreply_modes table: %w", err)
-	}
-	if _, err := db.Exec(activeModeTableSQL); err != nil {
-		return fmt.Errorf("failed to create active_mode table: %w", err)
-	}
-
-	// No initial data for active_mode as it's user-specific and populated on demand.
-
-	// The logic for adding google_contacts_auth_token has been moved to migrations (ID 5).
-	// The createTables function is now only responsible for tables that are not part of the core migration sequence,
-	// or if we decide that all table creations should eventually be migrations.
-	// For now, autoreply_modes and active_mode are created here. If they were to be migrated,
-	// their creation SQL would also be removed from here and put into new migration entries.
-
+	// This function is currently a no-op but is kept in case there are future needs
+	// for table setup outside the main migration sequence or for other DB types
+	// not covered by the current migration logic.
 	return nil
 }
 
