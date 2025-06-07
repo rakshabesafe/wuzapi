@@ -86,11 +86,11 @@ func (s *server) connectOnStartup() {
 				}
 			} else {
 				for _, arg := range eventarray {
-					if !Find(messageTypes, arg) {
+					if _, found := Find(supportedEventTypes, arg); !found {
 						log.Warn().Str("Type", arg).Msg("Message type discarded")
 						continue
 					}
-					if !Find(subscribedEvents, arg) {
+					if _, found := Find(subscribedEvents, arg); !found {
 						subscribedEvents = append(subscribedEvents, arg)
 					}
 				}

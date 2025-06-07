@@ -16,28 +16,6 @@ func Find(slice []string, val string) (int, bool) {
 	return -1, false
 }
 
-// Values struct holds key-value pairs, typically for user information.
-type Values struct {
-	m map[string]string
-}
-
-// Get retrieves a value by key from the Values struct.
-func (v Values) Get(key string) string {
-	return v.m[key]
-}
-
-// Update entry in User map
-// This version is type-safe with the Values struct.
-func updateUserInfo(v Values, key string, value string) Values {
-	// Ensure the map is initialized if it's nil, which can happen if Values is zero-initialized.
-	if v.m == nil {
-		v.m = make(map[string]string)
-	}
-	log.Debug().Str("field", key).Str("value", value).Msg("User info updated")
-	v.m[key] = value
-	return v
-}
-
 // webhook for regular messages
 func callHook(myurl string, payload map[string]string, id string) {
 	log.Info().Str("url", myurl).Msg("Sending POST to client " + id)
