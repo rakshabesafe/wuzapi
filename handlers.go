@@ -4850,7 +4850,7 @@ func (s *server) AddUser() http.HandlerFunc {
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
+			s.Respond(w, r, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
 				"error":   "Invalid request payload",
 				"success": false,
@@ -4858,7 +4858,7 @@ func (s *server) AddUser() http.HandlerFunc {
 			return
 		}
 		if user.Token == "" {
-			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
+			s.Respond(w, r, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
 				"error":   "Token is required",
 				"success": false,
@@ -4866,7 +4866,7 @@ func (s *server) AddUser() http.HandlerFunc {
 			return
 		}
 		if user.Name == "" {
-			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
+			s.Respond(w, r, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
 				"error":   "Missing required fields",
 				"success": false,
@@ -4885,7 +4885,7 @@ func (s *server) AddUser() http.HandlerFunc {
 		}
 		var count int
 		if err := s.db.Get(&count, "SELECT COUNT(*) FROM users WHERE token = $1", user.Token); err != nil {
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Database error",
 				"success": false,
@@ -4893,7 +4893,7 @@ func (s *server) AddUser() http.HandlerFunc {
 			return
 		}
 		if count > 0 {
-			s.respondWithJSON(w, http.StatusConflict, map[string]interface{}{
+			s.Respond(w, r, http.StatusConflict, map[string]interface{}{
 				"code":    http.StatusConflict,
 				"error":   "User with this token already exists",
 				"success": false,
@@ -4904,7 +4904,7 @@ func (s *server) AddUser() http.HandlerFunc {
 		for _, event := range eventList {
 			event = strings.TrimSpace(event)
 			if _, found := Find(supportedEventTypes, event); !found {
-				s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
+				s.Respond(w, r, http.StatusBadRequest, map[string]interface{}{
 					"code":    http.StatusBadRequest,
 					"error":   "Invalid event type",
 					"success": false,
@@ -4916,7 +4916,7 @@ func (s *server) AddUser() http.HandlerFunc {
 		id, err := GenerateRandomID()
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to generate random ID")
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Failed to generate user ID",
 				"success": false,
@@ -4928,14 +4928,14 @@ func (s *server) AddUser() http.HandlerFunc {
 			id, user.Name, user.Token, user.Webhook, user.Expiration, user.Events, "", "", user.ProxyURL,
 		); err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("Admin DB Error")
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Database error",
 				"success": false,
 			})
 			return
 		}
-		s.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+		s.Respond(w, r, http.StatusCreated, map[string]interface{}{
 			"code": http.StatusCreated,
 			"data": map[string]interface{}{
 				"id":   id,
@@ -4952,7 +4952,7 @@ func (s *server) DeleteUser() http.HandlerFunc {
 		userID := vars["id"]
 		result, err := s.db.Exec("DELETE FROM users WHERE id=$1", userID)
 		if err != nil {
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Database error",
 				"success": false,
@@ -4961,7 +4961,7 @@ func (s *server) DeleteUser() http.HandlerFunc {
 		}
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Failed to verify deletion",
 				"success": false,
@@ -4969,7 +4969,7 @@ func (s *server) DeleteUser() http.HandlerFunc {
 			return
 		}
 		if rowsAffected == 0 {
-			s.respondWithJSON(w, http.StatusNotFound, map[string]interface{}{
+			s.Respond(w, r, http.StatusNotFound, map[string]interface{}{
 				"code":    http.StatusNotFound,
 				"error":   "User not found",
 				"success": false,
@@ -4977,7 +4977,7 @@ func (s *server) DeleteUser() http.HandlerFunc {
 			})
 			return
 		}
-		s.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		s.Respond(w, r, http.StatusOK, map[string]interface{}{
 			"code":    http.StatusOK,
 			"data":    map[string]string{"id": userID},
 			"success": true,
@@ -4992,7 +4992,7 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 		vars := mux.Vars(r)
 		id := vars["id"]
 		if id == "" {
-			s.respondWithJSON(w, http.StatusBadRequest, map[string]interface{}{
+			s.Respond(w, r, http.StatusBadRequest, map[string]interface{}{
 				"code":    http.StatusBadRequest,
 				"error":   "Missing ID",
 				"success": false,
@@ -5002,7 +5002,7 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 		var exists bool
 		err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", id).Scan(&exists)
 		if err != nil {
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Database error",
 				"success": false,
@@ -5011,7 +5011,7 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			return
 		}
 		if !exists {
-			s.respondWithJSON(w, http.StatusNotFound, map[string]interface{}{
+			s.Respond(w, r, http.StatusNotFound, map[string]interface{}{
 				"code":    http.StatusNotFound,
 				"error":   "User not found",
 				"success": false,
@@ -5034,7 +5034,7 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 		}
 		_, err = s.db.Exec("DELETE FROM users WHERE id = $1", id)
 		if err != nil {
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
 				"code":    http.StatusInternalServerError,
 				"error":   "Database error",
 				"success": false,
@@ -5054,7 +5054,7 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			}
 		}
 		log.Info().Str("id", id).Str("name", uname).Str("jid", jid).Msg("User deleted successfully")
-		s.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		s.Respond(w, r, http.StatusOK, map[string]interface{}{
 			"code": http.StatusOK,
 			"data": map[string]interface{}{
 				"id":   id,
@@ -5071,27 +5071,64 @@ func (s *server) Respond(w http.ResponseWriter, r *http.Request, status int, dat
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	dataenvelope := map[string]interface{}{"code": status}
+	var responsePayload map[string]interface{}
+
 	if err, ok := data.(error); ok {
-		dataenvelope["error"] = err.Error()
-		dataenvelope["success"] = false
-	} else {
-		var mydata map[string]interface{}
-		if err := json.Unmarshal([]byte(data.(string)), &mydata); err == nil {
-			dataenvelope["data"] = mydata
-		} else {
-			var mySlice []interface{}
-			if err := json.Unmarshal([]byte(data.(string)), &mySlice); err == nil {
-				dataenvelope["data"] = mySlice
-			} else {
-				log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("Error unmarshalling JSON")
+		responsePayload = map[string]interface{}{
+			"code":    status,
+			"error":   err.Error(),
+			"success": false,
+		}
+	} else if dataMap, ok := data.(map[string]interface{}); ok {
+		// Check if the provided map looks like a full envelope already
+		// (e.g., as was passed by admin handlers to the old respondWithJSON)
+		if _, hasCode := dataMap["code"]; hasCode {
+			// If it has "code", assume it's a pre-formed envelope. Respect its structure.
+			responsePayload = dataMap
+			responsePayload["code"] = status // Ensure the function's status parameter overrides
+			if _, hasSuccess := dataMap["success"]; !hasSuccess { // ensure success field if missing
+                 responsePayload["success"] = (status >= 200 && status < 300)
+            }
+		} else { // It's a data map, embed it under a "data" key
+			responsePayload = map[string]interface{}{
+				"code":    status,
+				"data":    dataMap,
+				"success": true,
 			}
 		}
-		dataenvelope["success"] = true
+	} else if strData, ok := data.(string); ok {
+        // This handles cases where data is a pre-marshalled JSON string for the "data" field
+        // or just a plain string to be wrapped.
+		var jsonData interface{} // Use interface{} to handle both objects and arrays
+        if json.Unmarshal([]byte(strData), &jsonData) == nil {
+		    responsePayload = map[string]interface{}{
+			    "code":    status,
+			    "data":    jsonData, // jsonData is now unmarshalled Go data
+			    "success": true,
+		    }
+        } else { // If it's not valid JSON, treat as a plain string for the "data" field
+            responsePayload = map[string]interface{}{
+			    "code":    status,
+			    "data":    strData,
+			    "success": true,
+		    }
+        }
+	} else if data != nil { // Other non-nil data (structs, slices etc.)
+		responsePayload = map[string]interface{}{
+			"code":    status,
+			"data":    data,
+			"success": true,
+		}
+	} else { // data is nil (and not an error)
+		responsePayload = map[string]interface{}{
+			"code":    status,
+			"success": true, // Typically for GETs with no data or successful no-content actions
+		}
 	}
 
-	if err := json.NewEncoder(w).Encode(dataenvelope); err != nil {
-		panic("respond: " + err.Error())
+	if err := json.NewEncoder(w).Encode(responsePayload); err != nil {
+		// Log the error instead of panicking
+		log.Error().Err(err).Msg("Failed to encode JSON response in Respond")
 	}
 }
 
